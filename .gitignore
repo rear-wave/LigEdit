@@ -1,0 +1,30 @@
+# Build outputs
+dist/
+build/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.venv/
+venv/
+
+# Windows
+*.exe
+*.dll
+*.pdb
+*.manifest
+
+# Logs
+*.log
