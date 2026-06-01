@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip show *)",
+      "Bash(pyinstaller *)",
+      "Bash(cmd.exe /c build.bat)"
+    ]
+  }
+}

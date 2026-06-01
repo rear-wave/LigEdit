@@ -233,6 +233,84 @@ def time_classifier_display(time_str):
 
 
 # ============================================================================
+#                          流水线公共函数
+# ============================================================================
+
+def ReadLigFile(FileName):
+    """读取lig文件全量数据（用于流水线），返回 {time_str: piece_data}"""
+    with open(FileName, 'rb') as fp:
+        Data = {}
+        version = struct.unpack('i', fp.read(4))[0]
+        NumOfPiece = struct.unpack('i', fp.read(4))[0]
+        fp.read(4)  # firstPieceCacheCount
+        fp.read(4)  # lastPieceCacheCount
+        fp.read(4)  # FirstPieceCachePlace
+        fp.read(4)  # LastPieceCachePlace
+        fp.read(4)  # SamplingEventID
+        fp.read(4)  # StationID
+        ReadGPSTimeFromLig(fp)  # firstPieceTime
+        ReadGPSTimeFromLig(fp)  # lastPieceTime
+        for i in range(NumOfPiece):
+            try:
+                piece = ReadPerLigPieceFromLig(fp, version)
+                time_key = str(piece['m_FirstPointTime'])
+                Data[time_key] = piece
+            except Exception:
+                pass
+    return Data
+
+
+def CutPieceTo16000(piece):
+    """截取波形峰值前后共16000点"""
+    index_max = np.where(piece == piece.max())[0][0]
+    if index_max - 4000 < 0:
+        begin = 0
+        end = min(begin + 16000, len(piece))
+    elif index_max + 12000 > len(piece):
+        end = len(piece)
+        begin = max(end - 16000, 0)
+    else:
+        begin = index_max - 4000
+        end = begin + 16000
+    return piece[begin:end]
+
+
+def compute_final_time(lig_time, piece):
+    """从lig时间和波形数据计算精确时间"""
+    from decimal import Decimal
+    y = CutPieceTo16000(piece - np.mean(piece))
+    y = ButterFilter(y)
+    y_abs = np.abs(y)
+    peak_index = np.argmax(y_abs)
+    time_right = Decimal(lig_time)
+    time_int = Decimal(10000)
+    Time1 = time_right % time_int
+    trigger_time = peak_index * 0.0002
+    real_time1 = Time1 + Decimal(str(trigger_time)) * Decimal('0.001')
+    real_time = f"{real_time1:.7f}"
+    final_time = f"{lig_time.split('.')[0]}.{real_time.split('.')[1]}"
+    return final_time
+
+
+def repacklig(pulse, time_str, lig_head_path):
+    """重新打包lig片段（用于流水线步骤4/5输出）"""
+    try:
+        with open(lig_head_path, 'rb') as f:
+            lig_head = f.read()
+        YMDHMS = [int(time_str[:2]), int(time_str[2:4]), int(time_str[4:6]),
+                   int(time_str[6:8]), int(time_str[8:10]), int(float(time_str[10:12]))]
+        Sec = float(time_str[12:])
+        PieceYMDHMS = struct.pack('6i4x', *YMDHMS)
+        PieceSec = struct.pack('d', Sec)
+        piece = pulse.tolist()
+        pieceFile = lig_head + struct.pack('16000H', *piece)
+        pieceFile = pieceFile[:108] + PieceYMDHMS + PieceSec + pieceFile[108 + 36:]
+        return pieceFile
+    except Exception:
+        return None
+
+
+# ============================================================================
 #                          入口 (PyQt5)
 # ============================================================================
 

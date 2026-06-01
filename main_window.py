@@ -95,6 +95,11 @@ class MainWindow(QMainWindow):
         export_menu.addAction("导出时间戳列表...", self.export_timestamps)
         export_menu.addAction("导出勾选时间戳...", self.export_checked_timestamps)
 
+        # 数据处理菜单
+        data_menu = menubar.addMenu("数据处理(&D)")
+        data_menu.addAction("按距离分类...", self.open_distance_classify)
+        data_menu.addAction("按昼夜分类...", self.open_daynight_classify)
+
         # 帮助菜单
         help_menu = menubar.addMenu("帮助(&H)")
         help_menu.addAction("关于LigEdit", self.show_about)
@@ -722,8 +727,19 @@ class MainWindow(QMainWindow):
         if ds:
             self._save_with_deletions(self.active_file, filepath)
         else:
-            shutil.copy2(self.active_file, filepath)
-            QMessageBox.information(self, "保存成功", f"文件已保存到:\n{filepath}")
+            self._save_without_deletions(self.active_file, filepath)
+
+    def _save_without_deletions(self, src_filepath, output_path):
+        try:
+            shutil.copy2(src_filepath, output_path)
+            if output_path == src_filepath:
+                self._reload_file(output_path)
+            else:
+                self._remove_file(src_filepath)
+                self._do_load_file(output_path)
+            QMessageBox.information(self, "保存成功", f"文件已保存到:\n{output_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", f"保存文件时出错:\n{e}")
 
     def _save_with_deletions(self, src_filepath, output_path):
         fd = self.file_data[src_filepath]
@@ -732,7 +748,11 @@ class MainWindow(QMainWindow):
             SaveLigFile(output_path, fd['raw_data'], fd['header_size'],
                         fd['piece_offsets'], ds)
             deleted_count = len(ds)
-            self._reload_file(output_path)
+            if output_path == src_filepath:
+                self._reload_file(output_path)
+            else:
+                self._remove_file(src_filepath)
+                self._do_load_file(output_path)
             QMessageBox.information(self, "保存成功",
                                     f"已删除 {deleted_count} 个片段\n"
                                     f"保存到: {output_path}")
@@ -905,6 +925,17 @@ class MainWindow(QMainWindow):
             "  All rights reserved by Shensi Wang\n"
             "  (shensiwang74@gmail.com, 18356054196)"
         )
+
+    # -------------------- 数据处理 --------------------
+    def open_distance_classify(self):
+        from pipeline_dialog import DistanceClassifyDialog
+        dlg = DistanceClassifyDialog(self)
+        dlg.exec_()
+
+    def open_daynight_classify(self):
+        from pipeline_dialog import DayNightClassifyDialog
+        dlg = DayNightClassifyDialog(self)
+        dlg.exec_()
 
     # -------------------- 自动加载命令行文件 --------------------
     def auto_load_files(self):
