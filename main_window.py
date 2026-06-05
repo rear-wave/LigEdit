@@ -40,6 +40,9 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 700)
         self.showMaximized()
 
+        # 支持拖拽打开文件
+        self.setAcceptDrops(True)
+
         # 数据模型
         self.file_data = {}
         self.deleted_sets = {}
@@ -249,6 +252,24 @@ class MainWindow(QMainWindow):
     # -------------------- 快捷键 --------------------
     def _build_shortcuts(self):
         pass  # 快捷键已通过 QKeySequence 在菜单中绑定
+
+    # -------------------- 拖拽打开文件 --------------------
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            for url in urls:
+                if url.toLocalFile().lower().endswith('.lig'):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        for url in urls:
+            filepath = url.toLocalFile()
+            if filepath.lower().endswith('.lig') and os.path.isfile(filepath):
+                if filepath not in self.file_data:
+                    self._do_load_file(filepath)
 
     # -------------------- 右键菜单 --------------------
     def _build_context_menu(self):
@@ -607,6 +628,7 @@ class MainWindow(QMainWindow):
             is_daytime=is_daytime,
             is_deleted=is_deleted,
             is_checked=is_checked,
+            gps_time_key=format_time_display(time_key),
         )
 
     # -------------------- 编辑操作 --------------------
@@ -939,7 +961,26 @@ class MainWindow(QMainWindow):
 
     # -------------------- 自动加载命令行文件 --------------------
     def auto_load_files(self):
-        args = sys.argv[1:]
-        for f in args:
-            if f.lower().endswith('.lig') and os.path.isfile(f):
-                self._load_file(f)
+        for arg in sys.argv[1:]:
+            # Windows双击打开时路径可能带引号，需清理
+            filepath = arg.strip('"').strip("'")
+            if not filepath:
+                continue
+            if not os.path.isabs(filepath):
+                filepath = os.path.abspath(filepath)
+            if filepath.lower().endswith('.lig') and os.path.isfile(filepath):
+                self._load_file(filepath)
+
+
+# ============================================================================
+#                          入口
+# ============================================================================
+
+if __name__ == '__main__':
+    from PyQt5.QtWidgets import QApplication
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    window = MainWindow()
+    window.show()
+    window.auto_load_files()
+    sys.exit(app.exec_())
