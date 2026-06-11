@@ -9,9 +9,9 @@ WaveformWidget - 示波器风格双面板波形显示控件
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtGui import QPen, QColor, QBrush, QKeySequence, QFont
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QShortcut)
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QShortcut, QLabel)
 
 
 # ============================================================================
@@ -129,6 +129,30 @@ class WaveformWidget(QWidget):
 
         setup_scope_theme()
         self._build_ui()
+
+        # 光标竖线 + 时间戳标签（必须在 _build_ui 之后，因为 detail_plot 在那里创建）
+        self._cursor_line = pg.InfiniteLine(
+            angle=90,
+            pen=pg.mkPen(color='#cccccc', width=1.5, style=Qt.SolidLine),
+            movable=False,
+        )
+        self.detail_plot.addItem(self._cursor_line)
+        self._cursor_line.setVisible(False)
+
+        # 用 QLabel 作为时间戳覆盖层（像素坐标，不受 ViewBox 裁剪）
+        self._cursor_label = QLabel('')
+        self._cursor_label.setFont(QFont('Consolas', 10))
+        self._cursor_label.setStyleSheet('color: #cccccc; background: transparent; padding: 2px 4px;')
+        self._cursor_label.setParent(self.detail_plot)
+        self._cursor_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._cursor_label.hide()
+
+        # 鼠标跟踪
+        self.detail_plot.setMouseTracking(True)
+        self.detail_plot.viewport().setMouseTracking(True)
+        self.detail_plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
+        self.detail_plot.viewport().installEventFilter(self)
+
         self._setup_linkage()
         self._setup_shortcuts()
 
@@ -261,16 +285,91 @@ class WaveformWidget(QWidget):
         QShortcut(QKeySequence(Qt.Key_Left), self, self._pan_left)
         QShortcut(QKeySequence(Qt.Key_Right), self, self._pan_right)
 
+    # -------------------- 光标竖线 + 时间戳 --------------------
+
+    def eventFilter(self, obj, event):
+        if obj == self.detail_plot.viewport():
+            if event.type() == event.Leave:
+                self._cursor_line.setVisible(False)
+                self._cursor_label.hide()
+        return super().eventFilter(obj, event)
+
+    def _on_mouse_moved(self, pos):
+        if self._data is None:
+            return
+        vb = self.detail_plot.getPlotItem().getViewBox()
+        mouse_point = vb.mapSceneToView(pos)
+        x_val = mouse_point.x()
+
+        # 检查是否在数据范围内
+        x_min, x_max = self._x_full_range
+        if x_val < x_min or x_val > x_max:
+            self._cursor_line.setVisible(False)
+            self._cursor_label.hide()
+            return
+
+        self._cursor_line.setPos(x_val)
+        self._cursor_line.setVisible(True)
+
+        # 计算时间戳文本
+        time_str = self._format_cursor_time(x_val)
+        self._cursor_label.setText(time_str)
+
+        # 场景坐标 → 像素坐标，标签跟随鼠标位置（右上方偏移）
+        vp_pos = self.detail_plot.mapFromScene(pos)
+        self._cursor_label.move(vp_pos + QPoint(8, -8))
+        self._cursor_label.show()
+
+    def _format_cursor_time(self, x_ms):
+        """将毫秒位置格式化为两行: GPS时间(=原始+偏移) + 相对时间"""
+        if self._time_array is None or len(self._time_array) == 0:
+            return f"{x_ms:.3f} ms"
+
+        dt = x_ms - self._time_array[0] if len(self._time_array) > 0 else 0
+        total_us = dt * 1000
+
+        if total_us < 1000:
+            rel_str = f"{total_us:.1f} μs"
+        elif total_us < 1000000:
+            rel_str = f"{dt:.3f} ms"
+        else:
+            rel_str = f"{dt / 1000:.6f} s"
+
+        # 第一行 = 原始GPS时间 + 偏移量（随鼠标变化）
+        gps_str = ""
+        if self._gps_time_key:
+            gps_str = self._add_offset_to_gps(self._gps_time_key, dt) + "\n"
+
+        return f"{gps_str}{rel_str}"
+
+    @staticmethod
+    def _add_offset_to_gps(time_str, offset_ms):
+        """在格式化的GPS时间上加上毫秒偏移，返回新字符串"""
+        try:
+            from datetime import datetime, timedelta
+            s = time_str.strip()
+            # format_time_display 可能输出7位小数(如 .6170650)，%f只接受6位
+            if '.' in s:
+                base, frac = s.rsplit('.', 1)
+                frac = (frac + '000000')[:6]  # 补齐或截断到6位微秒
+                s = base + '.' + frac
+            t = datetime.strptime(s, "%Y-%m-%d %H:%M:%S.%f")
+            t2 = t + timedelta(milliseconds=offset_ms)
+            return t2.strftime("%Y-%m-%d %H:%M:%S.%f")
+        except Exception:
+            return time_str
+
     # -------------------- 公开接口 --------------------
 
     def set_waveform(self, data, raw_data=None, time_array=None, is_daytime=False,
-                     is_deleted=False, is_checked=False):
+                     is_deleted=False, is_checked=False, gps_time_key=None):
         if data is None or len(data) == 0:
             self.clear_waveform()
             return
 
         self._data = np.asarray(data, dtype=np.float64)
         self._is_daytime = is_daytime
+        self._gps_time_key = gps_time_key
 
         if time_array is not None:
             self._time_array = np.asarray(time_array, dtype=np.float64)
@@ -316,10 +415,13 @@ class WaveformWidget(QWidget):
     def clear_waveform(self):
         self._data = None
         self._time_array = None
+        self._gps_time_key = None
         self.detail_raw_curve.setData([], [])
         self.detail_curve.setData([], [])
         self.overview_raw_curve.setData([], [])
         self.overview_curve.setData([], [])
+        self._cursor_line.setVisible(False)
+        self._cursor_label.hide()
 
     def reset_view(self):
         if self._data is None:

@@ -190,6 +190,37 @@ def SaveLigFile(output_path, raw_data, header_size, piece_offsets, deleted_indic
         fp.write(new_data)
 
 
+def MergeLigFiles(filepaths, output_path):
+    """合并多个lig文件为一个，按时间排序"""
+    all_pieces = []  # [(time_key, raw_bytes)]
+    first_raw_data = None
+    header_size = 0
+
+    for filepath in filepaths:
+        header, pieces, raw_data, piece_offsets, hdr_size = ReadLigFileWithOffsets(filepath)
+        if first_raw_data is None:
+            first_raw_data = raw_data
+            header_size = hdr_size
+        for i, (time_key, piece_data) in enumerate(pieces):
+            start, end = piece_offsets[i]
+            all_pieces.append((time_key, raw_data[start:end]))
+
+    # 按时间排序
+    all_pieces.sort(key=lambda x: x[0])
+
+    # 构建新文件: 使用第一个文件的文件头作为模板，更新片段数
+    new_data = bytearray(first_raw_data[:header_size])
+    struct.pack_into('i', new_data, 4, len(all_pieces))
+
+    for _, piece_bytes in all_pieces:
+        new_data.extend(piece_bytes)
+
+    with open(output_path, 'wb') as fp:
+        fp.write(new_data)
+
+    return len(all_pieces)
+
+
 def ButterFilter(piece):
     fc = 300000
     fs = 5000000

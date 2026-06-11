@@ -28,8 +28,10 @@ echo.
 pyinstaller --onefile --windowed --name LigEdit --clean ^
     --hidden-import=PyQt5 --hidden-import=PyQt5.QtCore --hidden-import=PyQt5.QtGui --hidden-import=PyQt5.QtWidgets ^
     --hidden-import=pyqtgraph --hidden-import=numpy --hidden-import=scipy --hidden-import=scipy.signal ^
+    --hidden-import=pipeline --hidden-import=pipeline_dialog ^
+    --add-data "LigHead.lig;." --add-data "Limitbyt;." --add-data "站点经纬度.txt;." ^
     --exclude-module=matplotlib --exclude-module=tkinter ^
-    lig_editor.py
+    main_window.py
 
 echo.
 if exist "dist\LigEdit.exe" (

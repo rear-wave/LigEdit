@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
 
 from waveform_widget import WaveformWidget, SCOPE_STYLE
 from lig_editor import (
-    ReadLigFileWithOffsets, SaveLigFile, ButterFilter,
+    ReadLigFileWithOffsets, SaveLigFile, MergeLigFiles, ButterFilter,
     load_station_coords, match_station_name,
     format_time_display, time_classifier_display,
 )
@@ -39,6 +39,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("LigEdit - 雷电波形编辑器")
         self.setMinimumSize(1200, 700)
         self.showMaximized()
+
+        # 支持拖拽打开文件
+        self.setAcceptDrops(True)
 
         # 数据模型
         self.file_data = {}
@@ -65,6 +68,9 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction("保存当前文件", self.save_file, QKeySequence("Ctrl+S"))
         file_menu.addAction("另存为...", self.save_as)
+        file_menu.addSeparator()
+        file_menu.addAction("合并文件...", self.merge_files)
+        file_menu.addAction("合并当前已加载文件...", self.merge_loaded_files)
         file_menu.addSeparator()
         file_menu.addAction("关闭当前文件", self.close_current_file)
         file_menu.addSeparator()
@@ -250,6 +256,24 @@ class MainWindow(QMainWindow):
     def _build_shortcuts(self):
         pass  # 快捷键已通过 QKeySequence 在菜单中绑定
 
+    # -------------------- 拖拽打开文件 --------------------
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            for url in urls:
+                if url.toLocalFile().lower().endswith('.lig'):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        for url in urls:
+            filepath = url.toLocalFile()
+            if filepath.lower().endswith('.lig') and os.path.isfile(filepath):
+                if filepath not in self.file_data:
+                    self._do_load_file(filepath)
+
     # -------------------- 右键菜单 --------------------
     def _build_context_menu(self):
         menu = QMenu(self)
@@ -319,6 +343,54 @@ class MainWindow(QMainWindow):
         if not self.active_file or self.active_file not in self.file_data:
             return
         self._remove_file(self.active_file)
+
+    # -------------------- 合并操作 --------------------
+    def merge_files(self):
+        """选择多个lig文件合并为一个"""
+        filepaths, _ = QFileDialog.getOpenFileNames(
+            self, "选择要合并的lig文件（可多选）", "",
+            "LIG文件 (*.lig);;所有文件 (*.*)"
+        )
+        if len(filepaths) < 2:
+            QMessageBox.information(self, "提示", "请至少选择2个lig文件进行合并")
+            return
+        self._do_merge(filepaths)
+
+    def merge_loaded_files(self):
+        """合并当前已加载的所有lig文件"""
+        if len(self.file_data) < 2:
+            QMessageBox.information(self, "提示", "请至少加载2个lig文件后再合并")
+            return
+        self._do_merge(list(self.file_data.keys()))
+
+    def _do_merge(self, filepaths):
+        """执行合并操作"""
+        default_name = "merged.lig"
+        # 尝试用第一个文件的信息生成默认文件名
+        first_fp = filepaths[0]
+        if first_fp in self.file_data:
+            default_name = self._get_default_filename(first_fp).replace(".lig", "_merged.lig")
+
+        output_path, _ = QFileDialog.getSaveFileName(
+            self, "合并文件保存为", default_name, "LIG文件 (*.lig)"
+        )
+        if not output_path:
+            return
+
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            total = MergeLigFiles(filepaths, output_path)
+            QApplication.restoreOverrideCursor()
+            QMessageBox.information(
+                self, "合并成功",
+                f"已合并 {len(filepaths)} 个文件，共 {total} 个片段\n"
+                f"保存到: {output_path}"
+            )
+            # 自动加载合并后的文件
+            self._load_file(output_path)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "合并失败", f"合并文件时出错:\n{e}")
 
     def _remove_file(self, filepath):
         if filepath in self.file_data:
@@ -607,6 +679,7 @@ class MainWindow(QMainWindow):
             is_daytime=is_daytime,
             is_deleted=is_deleted,
             is_checked=is_checked,
+            gps_time_key=format_time_display(time_key),
         )
 
     # -------------------- 编辑操作 --------------------
@@ -939,7 +1012,26 @@ class MainWindow(QMainWindow):
 
     # -------------------- 自动加载命令行文件 --------------------
     def auto_load_files(self):
-        args = sys.argv[1:]
-        for f in args:
-            if f.lower().endswith('.lig') and os.path.isfile(f):
-                self._load_file(f)
+        for arg in sys.argv[1:]:
+            # Windows双击打开时路径可能带引号，需清理
+            filepath = arg.strip('"').strip("'")
+            if not filepath:
+                continue
+            if not os.path.isabs(filepath):
+                filepath = os.path.abspath(filepath)
+            if filepath.lower().endswith('.lig') and os.path.isfile(filepath):
+                self._load_file(filepath)
+
+
+# ============================================================================
+#                          入口
+# ============================================================================
+
+if __name__ == '__main__':
+    from PyQt5.QtWidgets import QApplication
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    window = MainWindow()
+    window.show()
+    window.auto_load_files()
+    sys.exit(app.exec_())
