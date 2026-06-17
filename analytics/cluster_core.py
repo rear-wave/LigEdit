@@ -9,6 +9,8 @@ analytics / cluster_core — 闪电波形聚类核心逻辑
 """
 
 import os
+from decimal import Decimal
+
 import numpy as np
 from scipy.signal import butter, filtfilt
 from sklearn.preprocessing import StandardScaler
@@ -78,7 +80,6 @@ def load_lig_pieces(lig_dir, progress_cb=None):
             except Exception:
                 pass
 
-    from decimal import Decimal
     all_pieces.sort(key=lambda x: Decimal(x['final_time']))
     return all_pieces
 
@@ -218,7 +219,7 @@ def build_feature_matrix(pieces, feature_mode='handcraft', filter_fc=300000, fs=
             v_centered = voltage - np.mean(voltage)
             if filter_fc < fs / 2:
                 fc_norm = filter_fc / (fs / 2)
-                b, a = butter(3, fc_norm, btype='low')
+                b, a = butter(4, fc_norm, btype='low')
                 v_filtered = filtfilt(b, a, v_centered)
             else:
                 v_filtered = v_centered

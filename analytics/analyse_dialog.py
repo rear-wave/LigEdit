@@ -495,8 +495,10 @@ class AnalyseDialog(QDialog):
             color = QColor(CATEGORY_COLORS[cat_idx % len(CATEGORY_COLORS)][0])
             indep_x, indep_y = [], []
             dep_x, dep_y = [], []
+            # 预建立索引映射 r → global_idx
+            idx_map = {id(r): i for i, r in enumerate(independent_results)}
             for r in cat_results:
-                global_idx = independent_results.index(r)
+                global_idx = idx_map.get(id(r), 0)
                 if r['is_independent']:
                     indep_x.append(global_idx)
                     indep_y.append(r['nearby_count'])

@@ -222,7 +222,7 @@ def ReadLigFileWithOffsets(FileName):
 def ButterFilter(piece):
     fc = 300000
     fs = 5000000
-    order = 3
+    order = 4
     fc_normalized = fc / (fs / 2)
     b, a = butter(order, fc_normalized, btype='low')
     return filtfilt(b, a, piece)

@@ -142,7 +142,7 @@ def load_station_timeline(station_dir: str, station_name: str,
 
     返回:
       times:   排序后的 Decimal(final_time) 列表
-      entries: [(filtered_piece, lig_time_str), ...]
+      entries: [(filtered_f64, lig_time_str, raw_uint16), ...]
     """
     lig_files = []
     for root, dirs, files in os.walk(station_dir):
@@ -164,19 +164,21 @@ def load_station_timeline(station_dir: str, station_name: str,
 
         for lig_time_str, piece_data in lig_data.items():
             try:
-                piece = np.array(piece_data['0'], dtype=np.float64)
+                raw_uint16 = np.array(piece_data['0'], dtype=np.uint16)
+                piece_f64 = raw_uint16.astype(np.float64)
             except KeyError:
                 continue
-            # 计算 final_time 和滤波后的波形
-            v_centered = piece - np.mean(piece)
+            # 计算 final_time 和滤波后的波形（float 用于匹配精度）
+            v_centered = piece_f64 - np.mean(piece_f64)
             v_cut = CutPieceTo16000(v_centered)
             v_filtered = ButterFilter(v_cut)
-            final_time_dec = Decimal(compute_final_time(lig_time_str, piece))
-            raw_entries.append((final_time_dec, v_filtered, lig_time_str))
+            final_time_dec = Decimal(compute_final_time(lig_time_str, piece_f64))
+            # 存储原始 uint16 波形（用于 repacklig 写出）和滤波后波形（用于匹配）
+            raw_entries.append((final_time_dec, v_filtered, lig_time_str, raw_uint16))
 
     raw_entries.sort(key=lambda x: x[0])
     times = [e[0] for e in raw_entries]
-    entries = [(e[1], e[2]) for e in raw_entries]
+    entries = [(e[1], e[2], e[3]) for e in raw_entries]
 
     logger.info("  [%s] %d pieces loaded, time range %s → %s",
                 station_name, len(entries),
@@ -247,7 +249,11 @@ def match_events(wwlln_events: List[dict],
 
             if result is not None:
                 idx, delta = result
-                piece_data, lig_time_str = sdata['entries'][idx]
+                entries = sdata['entries'][idx]
+                # entries 现在是 (filtered_piece, lig_time_str, raw_uint16) 三元组
+                piece_data = entries[0]
+                lig_time_str = entries[1]
+                raw_uint16 = entries[2]
                 station_matches.append({
                     'station_name': sta_name,
                     'distance_km': round(dist, 3),
@@ -257,6 +263,7 @@ def match_events(wwlln_events: List[dict],
                     'piece_data': piece_data,
                     'lig_time_str': lig_time_str,
                     'piece_index': idx,
+                    'raw_uint16': raw_uint16,
                 })
 
         if station_matches:
@@ -312,7 +319,8 @@ def write_event_output(event_idx: int, event: dict,
 
     pieces_bytes = []
     for match in station_matches:
-        packed = repacklig(match['piece_data'], match['lig_time_str'], limitbyt_path)
+        # 使用原始 uint16 波形数据写入，不用滤波后的 float 数据
+        packed = repacklig(match['raw_uint16'], match['lig_time_str'], limitbyt_path)
         if packed is not None:
             pieces_bytes.append(packed)
 

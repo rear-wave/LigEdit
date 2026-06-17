@@ -7,7 +7,6 @@ analytics / trace_dialog — 多站闪电事件匹配对话框
 """
 
 import os
-import json
 import queue
 import threading
 
