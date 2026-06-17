@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QFileDialog,
 )
 
-from lig_editor import _resource_path
+from lig_parser import _resource_path
 _DEFAULT_LIG_HEAD = _resource_path("LigHead.lig")
 _DEFAULT_LIMITBYT = _resource_path("Limitbyt")
 _STATION_FILE = _resource_path("站点经纬度.txt")

@@ -15,7 +15,7 @@ from os.path import getsize
 import numpy as np
 import pandas as pd
 
-from lig_editor import (
+from lig_parser import (
     ReadLigFile, ButterFilter, compute_final_time, repacklig,
     time_classifier_display, load_station_coords, match_station_name,
 )

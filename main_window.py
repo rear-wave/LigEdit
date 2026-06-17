@@ -20,10 +20,12 @@ from PyQt5.QtWidgets import (
 )
 
 from waveform_widget import WaveformWidget, SCOPE_STYLE
-from lig_editor import (
-    ReadLigFileWithOffsets, SaveLigFile, MergeLigFiles, ButterFilter,
-    load_station_coords, match_station_name,
+from lig_parser import (
+    ButterFilter, load_station_coords, match_station_name,
     format_time_display, time_classifier_display,
+)
+from lig_editor import (
+    ReadLigFileWithOffsets, SaveLigFile, MergeLigFiles,
 )
 
 
@@ -105,6 +107,10 @@ class MainWindow(QMainWindow):
         data_menu = menubar.addMenu("数据处理(&D)")
         data_menu.addAction("按距离分类...", self.open_distance_classify)
         data_menu.addAction("按昼夜分类...", self.open_daynight_classify)
+        data_menu.addSeparator()
+        data_menu.addAction("多站闪电追踪...", self.open_trace_match)
+        data_menu.addAction("波形聚类分析...", self.open_cluster_analysis)
+        data_menu.addAction("闪电数据分析...", self.open_lightning_analysis)
 
         # 帮助菜单
         help_menu = menubar.addMenu("帮助(&H)")
@@ -1008,6 +1014,21 @@ class MainWindow(QMainWindow):
     def open_daynight_classify(self):
         from pipeline_dialog import DayNightClassifyDialog
         dlg = DayNightClassifyDialog(self)
+        dlg.exec_()
+
+    def open_trace_match(self):
+        from analytics.trace_dialog import TraceDialog
+        dlg = TraceDialog(self)
+        dlg.exec_()
+
+    def open_cluster_analysis(self):
+        from analytics.cluster_dialog import ClusterDialog
+        dlg = ClusterDialog(self)
+        dlg.exec_()
+
+    def open_lightning_analysis(self):
+        from analytics.analyse_dialog import AnalyseDialog
+        dlg = AnalyseDialog(self)
         dlg.exec_()
 
     # -------------------- 自动加载命令行文件 --------------------
