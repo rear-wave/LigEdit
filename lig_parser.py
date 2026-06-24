@@ -310,10 +310,10 @@ def repacklig(pulse, time_str, lig_head_path):
 class PieceWriter:
     """lig 片段写入器：512 条自动分卷"""
 
-    def __init__(self, output_dir, station_name, lig_file_head_path):
+    def __init__(self, output_dir, station_name='', lig_file_head_path=None):
         self.output_dir = output_dir
         self.station_name = station_name
-        self.lig_file_head_path = lig_file_head_path
+        self.lig_file_head_path = lig_file_head_path or _resource_path('LigHead.lig')
         self.current_path = None
         self.current_fp = None
         self.piece_count = 0
@@ -333,9 +333,15 @@ class PieceWriter:
         if self.root_time is None:
             self.root_time = time_key
         if self.file_index == 1:
-            filename = f"{self.station_name}_{self.root_time}.lig"
+            if self.station_name:
+                filename = f"{self.station_name}_{self.root_time}.lig"
+            else:
+                filename = f"{self.root_time}.lig"
         else:
-            filename = f"{self.station_name}_{self.root_time}_{self.file_index}.lig"
+            if self.station_name:
+                filename = f"{self.station_name}_{self.root_time}_{self.file_index}.lig"
+            else:
+                filename = f"{self.root_time}_{self.file_index}.lig"
         self.current_path = os.path.join(self.output_dir, filename)
         self.current_fp = open(self.current_path, 'wb')
         if os.path.exists(self.lig_file_head_path):
@@ -400,6 +406,11 @@ def format_txt_time(txt_time_str):
         ip = ip[:12]
     fp = (fp + '0' * 7)[:7]
     return f"{ip}.{fp}"
+
+
+def time_str_to_decimal(time_str):
+    """将时间字符串转换为 Decimal 以便精确比较"""
+    return Decimal(time_str)
 
 
 def deg2rad(deg):

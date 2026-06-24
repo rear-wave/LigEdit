@@ -16,7 +16,7 @@ import numpy as np
 
 from lig_parser import (
     ReadLigFile, compute_final_time, compute_peak_voltage,
-    haversine_distance, format_txt_time,
+    haversine_distance, format_txt_time, time_str_to_decimal,
     ButterFilter, CutPieceTo16000,
     load_station_coords, match_station_name,
 )
@@ -346,6 +346,7 @@ def load_xlsx_lightning_dir(xlsx_dir, progress_cb=None, utc_hour_range=None):
                         'lat': lat, 'lon': lon,
                         'signal': float(row_dict.get('SIGNAL', 0)) if row_dict.get('SIGNAL') is not None else 0,
                         'multi': int(row_dict.get('MULTI', 0)) if row_dict.get('MULTI') is not None else 0,
+                        'risetime': float(row_dict.get('RISETIME', 0)) if row_dict.get('RISETIME') is not None and row_dict['RISETIME'] != '' else None,
                     })
                 except Exception:
                     pass
@@ -497,6 +498,8 @@ def analyse_independent_distribution(lig_pieces, lightnings, nbe_locations=None,
                                      progress_cb=None):
     """判断每个 lig 片段是否为独立闪电事件"""
     if not lightnings and not nbe_locations:
+        if progress_cb:
+            progress_cb("无闪电定位数据，跳过独立分布判断", -1)
         return []
 
     time_window_s = Decimal(str(time_window_ms)) / Decimal('1000')

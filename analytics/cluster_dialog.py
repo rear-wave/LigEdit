@@ -4,6 +4,8 @@
 analytics / cluster_dialog — 闪电波形聚类对话框
 
 移植自 LigCluster 的 MainWindow，缩减为 QDialog。
+增强：自动选k + 轮廓系数图、层次聚类 linkage 选择器、
+      时间格式化、导出统计、波形自适应缩放、空数据警告。
 """
 
 import os
@@ -25,6 +27,7 @@ import pyqtgraph as pg
 
 from lig_parser import (
     _resource_path, time_classifier_display, ButterFilter, CutPieceTo16000,
+    format_time_display,
 )
 
 # 聚类配色
@@ -79,6 +82,43 @@ class ClusterWorker(QThread):
 
     def _progress(self, msg, pct):
         self.progress.emit(msg, pct)
+
+
+class OptimalKWorker(QThread):
+    """后台寻找最优k线程"""
+    progress = pyqtSignal(str, int)
+    finished = pyqtSignal(int, dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, pieces, feature_mode, filter_fc, k_min, k_max):
+        super().__init__()
+        self.pieces = pieces
+        self.feature_mode = feature_mode
+        self.filter_fc = filter_fc
+        self.k_min = k_min
+        self.k_max = k_max
+
+    def run(self):
+        try:
+            from analytics.cluster_core import build_feature_matrix, find_optimal_k
+            self.progress.emit("提取特征...", 10)
+            feature_matrix, valid_indices = build_feature_matrix(
+                self.pieces, feature_mode=self.feature_mode,
+                filter_fc=self.filter_fc)
+
+            if len(valid_indices) == 0:
+                self.error.emit("无有效波形数据")
+                return
+
+            self.progress.emit("搜索最优k值...", 30)
+            best_k, scores = find_optimal_k(
+                feature_matrix,
+                k_range=range(self.k_min, min(self.k_max + 1, feature_matrix.shape[0])))
+
+            self.progress.emit(f"最优k={best_k}", 100)
+            self.finished.emit(best_k, scores)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 # ============================================================================
@@ -142,6 +182,16 @@ class ClusterDialog(QDialog):
         self.k_spin.setRange(2, 50)
         self.k_spin.setValue(3)
         row2.addWidget(self.k_spin)
+
+        # 自动选k 按钮
+        self.auto_k_btn = QPushButton("自动选k")
+        self.auto_k_btn.setStyleSheet(
+            "QPushButton { background: #6a1b9a; color: white; padding: 5px 14px; }"
+            "QPushButton:hover { background: #7b1fa2; }")
+        self.auto_k_btn.clicked.connect(self._find_optimal_k)
+        self.auto_k_btn.setEnabled(False)
+        row2.addWidget(self.auto_k_btn)
+
         row2.addSpacing(15)
         row2.addWidget(QLabel("降维:"))
         self.dim_combo = QComboBox()
@@ -168,6 +218,17 @@ class ClusterDialog(QDialog):
         self._dbscan_widget.setLayout(self.dbscan_group)
         self._dbscan_widget.setVisible(False)
         row3.addWidget(self._dbscan_widget)
+
+        # 层次聚类参数
+        self.agg_group = QHBoxLayout()
+        self.agg_group.addWidget(QLabel("  链接方式:"))
+        self.agg_linkage_combo = QComboBox()
+        self.agg_linkage_combo.addItems(["ward", "complete", "average", "single"])
+        self.agg_group.addWidget(self.agg_linkage_combo)
+        self._agg_widget = QWidget()
+        self._agg_widget.setLayout(self.agg_group)
+        self._agg_widget.setVisible(False)
+        row3.addWidget(self._agg_widget)
 
         row3.addWidget(QLabel("  滤波 (kHz):"))
         self.fc_spin = QDoubleSpinBox()
@@ -245,18 +306,45 @@ class ClusterDialog(QDialog):
         tabs.addTab(viz_widget, "聚类可视化")
 
         # 评估 Tab
+        eval_widget = QWidget()
+        eval_layout = QVBoxLayout(eval_widget)
+
         self.eval_text = QTextEdit()
         self.eval_text.setReadOnly(True)
-        tabs.addTab(self.eval_text, "聚类评估")
+        eval_layout.addWidget(self.eval_text)
+
+        # 轮廓系数图
+        self.silhouette_plot = pg.PlotWidget()
+        self.silhouette_plot.setBackground('#1e1e2e')
+        self.silhouette_plot.setLabel('bottom', 'k')
+        self.silhouette_plot.setLabel('left', '轮廓系数')
+        self.silhouette_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.silhouette_plot.setMaximumHeight(250)
+        eval_layout.addWidget(self.silhouette_plot)
+
+        tabs.addTab(eval_widget, "聚类评估")
 
         # 统计 Tab
+        stats_widget = QWidget()
+        stats_layout = QVBoxLayout(stats_widget)
         self.stats_table = QTableWidget()
         self.stats_table.setColumnCount(3)
         self.stats_table.setHorizontalHeaderLabels(['聚类', '样本数', '占比(%)'])
         self.stats_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.stats_table.setAlternatingRowColors(True)
         self.stats_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        tabs.addTab(self.stats_table, "统计")
+        stats_layout.addWidget(self.stats_table)
+
+        # 峰值电压分布直方图
+        self.voltage_dist_plot = pg.PlotWidget()
+        self.voltage_dist_plot.setBackground('#1e1e2e')
+        self.voltage_dist_plot.setLabel('bottom', '峰值电压', units='V')
+        self.voltage_dist_plot.setLabel('left', '数量')
+        self.voltage_dist_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.voltage_dist_plot.setMaximumHeight(250)
+        stats_layout.addWidget(self.voltage_dist_plot)
+
+        tabs.addTab(stats_widget, "聚类统计")
 
         # 日志 Tab
         self.log_text = QTextEdit()
@@ -272,6 +360,7 @@ class ClusterDialog(QDialog):
 
     def _on_algo_changed(self, algo):
         self._dbscan_widget.setVisible(algo == 'dbscan')
+        self._agg_widget.setVisible(algo == 'agglomerative')
         self.k_spin.setEnabled(algo != 'dbscan')
 
     # ---- 加载 ----
@@ -283,6 +372,7 @@ class ClusterDialog(QDialog):
 
         self.load_btn.setEnabled(False)
         self.run_btn.setEnabled(False)
+        self.auto_k_btn.setEnabled(False)
         self.progress_bar.setValue(0)
         self.log_text.clear()
 
@@ -296,9 +386,54 @@ class ClusterDialog(QDialog):
         self.pieces = pieces
         self.load_btn.setEnabled(True)
         self.run_btn.setEnabled(len(pieces) > 0)
+        self.auto_k_btn.setEnabled(len(pieces) > 0)
         self.progress_bar.setValue(100)
         self.info_label.setText(f"已加载 {len(pieces)} 条波形")
         self.log_text.append(f"数据加载完成: {len(pieces)} 条波形")
+
+        if len(pieces) == 0:
+            QMessageBox.warning(self, "无数据", "未找到有效的lig波形数据")
+
+    # ---- 自动选k ----
+    def _find_optimal_k(self):
+        if not self.pieces:
+            QMessageBox.warning(self, "无数据", "请先加载lig数据")
+            return
+
+        self.auto_k_btn.setEnabled(False)
+        self.progress_bar.setValue(0)
+
+        self.worker = OptimalKWorker(
+            self.pieces,
+            feature_mode=self.feature_combo.currentText(),
+            filter_fc=self.fc_spin.value() * 1000,
+            k_min=2,
+            k_max=self.k_spin.maximum(),
+        )
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_optimal_k_finished)
+        self.worker.error.connect(self._on_error)
+        self.worker.start()
+
+    def _on_optimal_k_finished(self, best_k, scores):
+        self.auto_k_btn.setEnabled(True)
+        self.k_spin.setValue(best_k)
+        self.log_text.append(f"最优k值: {best_k}")
+        for k, s in sorted(scores.items()):
+            s_str = f"{s:.4f}" if s is not None else "N/A"
+            self.log_text.append(f"  k={k}: 轮廓系数={s_str}")
+
+        # 绘制轮廓系数图
+        self.silhouette_plot.clear()
+        valid_k = [k for k, s in scores.items() if s is not None]
+        valid_s = [scores[k] for k in valid_k]
+        if valid_k:
+            self.silhouette_plot.plot(valid_k, valid_s,
+                                      pen=pg.mkPen(color='#4fc3f7', width=2),
+                                      symbol='o', symbolSize=8,
+                                      symbolBrush=pg.mkBrush('#4fc3f7'))
+
+        QMessageBox.information(self, "最优k值", f"基于轮廓系数，推荐 k={best_k}")
 
     # ---- 聚类 ----
     def _run_clustering(self):
@@ -308,6 +443,7 @@ class ClusterDialog(QDialog):
 
         self.run_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
+        self.auto_k_btn.setEnabled(False)
         self.progress_bar.setValue(0)
 
         config = {
@@ -317,6 +453,7 @@ class ClusterDialog(QDialog):
             'n_clusters': self.k_spin.value(),
             'dbscan_eps': self.eps_spin.value(),
             'dbscan_min_samples': self.min_samp_spin.value(),
+            'agglomerative_linkage': self.agg_linkage_combo.currentText(),
             'filter_fc': self.fc_spin.value() * 1000,
             'dim_reduction': self.dim_combo.currentText(),
             'export_dir': None,
@@ -334,6 +471,7 @@ class ClusterDialog(QDialog):
         self.cluster_results = results
         self.run_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
+        self.auto_k_btn.setEnabled(True)
         self.progress_bar.setValue(100)
         self.log_text.append("\n=== 聚类完成 ===")
         if results:
@@ -348,6 +486,7 @@ class ClusterDialog(QDialog):
     def _on_error(self, err_msg):
         self.run_btn.setEnabled(True)
         self.load_btn.setEnabled(True)
+        self.auto_k_btn.setEnabled(True)
         self.status_label.setText("出错")
         self.log_text.append(f"\n[错误] {err_msg}")
 
@@ -421,6 +560,30 @@ class ClusterDialog(QDialog):
             pct = f"{size / max(total, 1) * 100:.1f}"
             self.stats_table.setItem(i, 2, QTableWidgetItem(pct))
 
+        # 峰值电压分布直方图
+        self.voltage_dist_plot.clear()
+        if self.cluster_results and self.pieces:
+            labels = self.cluster_results.get('labels', [])
+            valid_indices = self.cluster_results.get('valid_indices', [])
+            for cluster_label in sorted(set(labels)):
+                mask = labels == cluster_label
+                cluster_indices = [valid_indices[i] for i in range(len(valid_indices)) if labels[i] == cluster_label]
+                voltages = [self.pieces[idx].get('peak_voltage') for idx in cluster_indices
+                            if self.pieces[idx].get('peak_voltage') is not None]
+                if not voltages:
+                    continue
+
+                color = CLUSTER_COLORS[cluster_label % len(CLUSTER_COLORS)] if cluster_label >= 0 else '#666666'
+                y, x = np.histogram(voltages, bins=15)
+                width = np.diff(x)[0] * 0.85 if len(x) > 1 else 1
+                brush = pg.mkBrush(int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16), 180)
+                pen = pg.mkPen(color, width=1)
+                bar = pg.BarGraphItem(x=x[:-1], height=y, width=width, brush=brush, pen=pen)
+                self.voltage_dist_plot.addItem(bar)
+
+            self.voltage_dist_plot.setLabel('bottom', '峰值电压', units='V')
+            self.voltage_dist_plot.setLabel('left', '数量')
+
     def _display_table(self, results):
         labels = results.get('labels', [])
         valid_indices = results.get('valid_indices', [])
@@ -436,7 +599,8 @@ class ClusterDialog(QDialog):
             item = QTableWidgetItem(cluster_name)
             item.setForeground(color)
             self.cluster_table.setItem(i, 0, item)
-            self.cluster_table.setItem(i, 1, QTableWidgetItem(piece.get('time_key', '')))
+            # 使用 format_time_display 格式化时间
+            self.cluster_table.setItem(i, 1, QTableWidgetItem(format_time_display(piece.get('time_key', ''))))
 
             self.cluster_table.setItem(i, 2, QTableWidgetItem(time_classifier_display(piece.get('time_key', ''))))
 
@@ -473,6 +637,15 @@ class ClusterDialog(QDialog):
         self.waveform_curve.setData(time_array, v_cut)
         self.waveform_curve.setPen(pg.mkPen(color=color, width=1.2))
 
+        # 自适应坐标轴范围
+        margin = 0.15
+        y_min, y_max = np.min(v_cut), np.max(v_cut)
+        y_range = y_max - y_min if y_max != y_min else 1
+        x_min, x_max = np.min(time_array), np.max(time_array)
+        x_range = x_max - x_min if x_max != x_min else 1
+        self.waveform_plot.setXRange(x_min - x_range * margin, x_max + x_range * margin)
+        self.waveform_plot.setYRange(y_min - y_range * margin, y_max + y_range * margin)
+
     # ---- 导出 ----
     def _export_results(self):
         if not self.cluster_results:
@@ -485,14 +658,21 @@ class ClusterDialog(QDialog):
 
         from analytics.cluster_core import export_clusters_to_lig, export_cluster_timestamps
 
+        self.export_btn.setEnabled(False)
+        self.progress_bar.setValue(0)
+
         try:
             labels = self.cluster_results['labels']
             valid_indices = self.cluster_results['valid_indices']
 
-            export_clusters_to_lig(
+            stats = export_clusters_to_lig(
                 self.pieces, labels, valid_indices, output_dir,
                 lig_head_path=_resource_path('Limitbyt'),
-                lig_file_head_path=_resource_path('LigHead.lig'))
+                lig_file_head_path=_resource_path('LigHead.lig'),
+                progress_cb=lambda msg, pct: (
+                    self.status_label.setText(msg),
+                    self.progress_bar.setValue(max(pct, 0))
+                ))
 
             export_cluster_timestamps(self.pieces, labels, valid_indices, output_dir)
 
@@ -509,13 +689,16 @@ class ClusterDialog(QDialog):
                     piece = self.pieces[idx]
                     label = labels[i]
                     cluster_name = 'noise' if label == -1 else f'cluster_{label}'
-                    writer.writerow([
-                        piece['time_key'], cluster_name,
-                        time_classifier_display(piece['time_key']),
-                        piece.get('peak_voltage', ''),
-                    ])
+                    daynight = time_classifier_display(piece['time_key'])
+                    peak_v = piece.get('peak_voltage', '')
+                    writer.writerow([piece['time_key'], cluster_name, daynight, peak_v])
 
-            QMessageBox.information(self, "导出完成", f"结果已导出到:\n{output_dir}")
+            QMessageBox.information(self, "导出完成",
+                f"聚类结果已导出到:\n{output_dir}\n\n"
+                f"聚类统计:\n" +
+                "\n".join(f"  {k}: {v} 条" for k, v in sorted(stats.items())))
 
         except Exception as e:
-            QMessageBox.critical(self, "导出失败", str(e))
+            QMessageBox.critical(self, "导出失败", f"导出时出错:\n{e}")
+        finally:
+            self.export_btn.setEnabled(True)

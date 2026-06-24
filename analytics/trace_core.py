@@ -11,7 +11,9 @@ analytics / trace_core — 多站闪电事件匹配核心逻辑
 import os
 import struct
 import math
+import time as time_module
 import logging
+from datetime import datetime
 from decimal import Decimal
 from bisect import bisect_left
 from typing import List, Dict, Tuple, Optional
@@ -21,7 +23,6 @@ import pandas as pd
 
 from lig_parser import (
     ReadLigFile, compute_final_time, repacklig, _resource_path,
-    ButterFilter, CutPieceTo16000,
 )
 
 
@@ -86,8 +87,11 @@ def parse_wwlln_time_to_decimal(date_str: str, time_str: str) -> Optional[Decima
         return None
 
 
-def load_wwlln_data(wwlln_folder: str) -> pd.DataFrame:
-    """读取所有 .loc 文件，返回 DataFrame (Time_fmt, Latitude, Longitude, Stations, Energy)"""
+def load_wwlln_data(wwlln_folder: str, target_day: str = None) -> pd.DataFrame:
+    """读取所有 .loc 文件，返回 DataFrame (Time_fmt, Latitude, Longitude, Stations, Energy)
+
+    target_day: 可选，格式 "YYMMDD"，仅加载指定日期的数据
+    """
     wwlln_files = sorted([f for f in os.listdir(wwlln_folder) if f.endswith('.loc')])
     all_data = []
     col_names = ["Date", "Time", "Latitude", "Longitude", "Error",
@@ -105,6 +109,10 @@ def load_wwlln_data(wwlln_folder: str) -> pd.DataFrame:
             df['Time_fmt'] = df.apply(
                 lambda row: parse_wwlln_time_to_decimal(row['Date'], row['Time']), axis=1)
             df = df.dropna(subset=['Time_fmt'])
+            if target_day:
+                df['day_str'] = df['Time_fmt'].apply(
+                    lambda x: str(x)[:6] if x is not None else None)
+                df = df[df['day_str'] == target_day]
             all_data.append(df)
         except Exception:
             continue
@@ -115,9 +123,12 @@ def load_wwlln_data(wwlln_folder: str) -> pd.DataFrame:
     return combined
 
 
-def load_wwlln_events(wwlln_dir: str) -> List[dict]:
-    """加载所有 WWLLN 事件，返回按时间排序的 dict 列表"""
-    df = load_wwlln_data(wwlln_dir)
+def load_wwlln_events(wwlln_dir: str, target_day: str = None) -> List[dict]:
+    """加载所有 WWLLN 事件，返回按时间排序的 dict 列表
+
+    target_day: 可选，格式 "YYMMDD"，仅加载指定日期的数据
+    """
+    df = load_wwlln_data(wwlln_dir, target_day=target_day)
     if df.empty:
         return []
     events = []
@@ -168,12 +179,9 @@ def load_station_timeline(station_dir: str, station_name: str,
                 piece_f64 = raw_uint16.astype(np.float64)
             except KeyError:
                 continue
-            # 计算 final_time 和滤波后的波形（float 用于匹配精度）
-            v_centered = piece_f64 - np.mean(piece_f64)
-            v_cut = CutPieceTo16000(v_centered)
-            v_filtered = ButterFilter(v_cut)
-            final_time_dec = Decimal(compute_final_time(lig_time_str, piece_f64))
-            # 存储原始 uint16 波形（用于 repacklig 写出）和滤波后波形（用于匹配）
+            # compute_final_time 内部已做 demean → CutPieceTo16000 → ButterFilter
+            # 返回 (final_time_dec, filtered_piece, lig_time_str)
+            final_time_dec, v_filtered, _ = compute_final_time(piece_f64, lig_time_str)
             raw_entries.append((final_time_dec, v_filtered, lig_time_str, raw_uint16))
 
     raw_entries.sort(key=lambda x: x[0])
@@ -223,6 +231,7 @@ def match_events(wwlln_events: List[dict],
                  station_data: dict,
                  time_window: Decimal,
                  min_stations: int,
+                 stop_flag,
                  logger: logging.Logger):
     """生成器，产出 (event_idx, event, station_matches)
 
@@ -233,6 +242,10 @@ def match_events(wwlln_events: List[dict],
     report_interval = max(1, total // 20)
 
     for event_idx, event in enumerate(wwlln_events):
+        if stop_flag and stop_flag.is_set():
+            logger.info("  匹配被用户中断，已处理 %d/%d 事件", event_idx, total)
+            break
+
         wwlln_time = event['time']
         wwlln_lat = event['lat']
         wwlln_lon = event['lon']
@@ -323,6 +336,8 @@ def write_event_output(event_idx: int, event: dict,
         packed = repacklig(match['raw_uint16'], match['lig_time_str'], limitbyt_path)
         if packed is not None:
             pieces_bytes.append(packed)
+        else:
+            logger.warning("  repacklig failed for station %s", match['station_name'])
 
     with open(lig_path, 'wb') as fout:
         fout.write(bytes(global_header))
@@ -352,6 +367,7 @@ def write_event_output(event_idx: int, event: dict,
 def run_trace_matching(stations: list, wwlln_dir: str, output_dir: str,
                        min_stations: int = 2, time_window_s: float = 0.050,
                        lig_head_path: str = None, limitbyt_path: str = None,
+                       target_day: str = None, stop_flag=None,
                        progress_cb=None, log_cb=None) -> str:
     """运行多站匹配并输出结果
 
@@ -361,6 +377,8 @@ def run_trace_matching(stations: list, wwlln_dir: str, output_dir: str,
         output_dir: 输出目录
         min_stations: 最小站数
         time_window_s: 时间窗口（秒）
+        target_day: 可选，格式 "YYMMDD"，仅加载指定日期的 WWLLN 数据
+        stop_flag: 可选，threading.Event，设置后匹配循环中断
         progress_cb: func(fraction, text)
         log_cb: func(text)
 
@@ -405,7 +423,7 @@ def run_trace_matching(stations: list, wwlln_dir: str, output_dir: str,
     if not os.path.isdir(wwlln_dir):
         return f"错误: WWLLN 目录不存在: {wwlln_dir}"
 
-    wwlln_events = load_wwlln_events(wwlln_dir)
+    wwlln_events = load_wwlln_events(wwlln_dir, target_day=target_day)
     if not wwlln_events:
         return "错误: 未加载到 WWLLN 事件"
     logger.info("已加载 %d 个 WWLLN 事件", len(wwlln_events))
@@ -444,9 +462,10 @@ def run_trace_matching(stations: list, wwlln_dir: str, output_dir: str,
     time_window = Decimal(str(time_window_s))
     total_wwlln = len(wwlln_events)
     total_output = 0
+    start_time = time_module.time()
 
     for event_idx, event, station_matches in match_events(
-            wwlln_events, station_data, time_window, min_stations, logger):
+            wwlln_events, station_data, time_window, min_stations, stop_flag, logger):
         write_event_output(event_idx, event, station_matches, output_dir,
                            lig_head_path, limitbyt_path, logger)
         total_output += 1
@@ -456,14 +475,33 @@ def run_trace_matching(stations: list, wwlln_dir: str, output_dir: str,
             progress_cb(min(0.95, frac),
                         f'匹配中: {event_idx+1}/{total_wwlln} 事件, {total_output} 已匹配')
 
+    elapsed = time_module.time() - start_time
+
+    # 写入日志文件到输出目录
+    log_path = os.path.join(output_dir, 'ligtrace.log')
+    try:
+        with open(log_path, 'w', encoding='utf-8') as lf:
+            lf.write("LigTrace 多站闪电事件匹配日志\n")
+            lf.write(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            lf.write(f"{'='*50}\n")
+            lf.write(f"活动站点 ({len(station_data)}): {list(station_data.keys())}\n")
+            lf.write(f"min_stations={min_stations}, time_window={time_window_s} s\n")
+            lf.write(f"扫描 WWLLN 事件: {total_wwlln}\n")
+            lf.write(f"多站事件输出: {total_output}\n")
+            lf.write(f"耗时: {elapsed:.1f} 秒\n")
+    except Exception:
+        pass
+
     logger.info("━" * 50)
     logger.info("匹配完成!")
     logger.info("  扫描 WWLLN 事件: %d", total_wwlln)
     logger.info("  多站事件输出: %d", total_output)
+    logger.info("  耗时: %.1f 秒", elapsed)
     logger.info("  输出目录: %s", output_dir)
     logger.info("━" * 50)
 
     if progress_cb:
         progress_cb(1.0, '完成')
 
-    return f"匹配完成！共匹配 {total_output} 个多站闪电事件\n输出目录: {output_dir}"
+    was_interrupted = stop_flag and stop_flag.is_set()
+    return f"匹配完成！共匹配 {total_output} 个多站闪电事件（耗时 {elapsed:.1f}s）\n输出目录: {output_dir}"

@@ -458,7 +458,7 @@ def export_clusters_to_lig(pieces, labels, valid_indices, output_dir,
         cluster_dir = os.path.join(output_dir, cluster_name)
         os.makedirs(cluster_dir, exist_ok=True)
 
-        writer = PieceWriter(cluster_dir, cluster_name, lig_file_head_path)
+        writer = PieceWriter(cluster_dir, '', lig_file_head_path)
         success_count = 0
 
         for idx in indices:
@@ -541,6 +541,7 @@ def run_full_clustering(pieces, feature_mode='handcraft', algorithm='kmeans',
         dbscan_eps=dbscan_eps, dbscan_min_samples=dbscan_min_samples,
         agglomerative_linkage=agglomerative_linkage, progress_cb=progress_cb)
     results['labels'] = labels
+    results['model'] = model
 
     if progress_cb:
         progress_cb("步骤 3: 评估质量...", 60)

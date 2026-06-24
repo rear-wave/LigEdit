@@ -397,15 +397,35 @@ class AnalyseDialog(QDialog):
 
         dist = summary.get('distance', {})
         if dist:
-            lines.append(f"\n【距离】均{dist['mean']}km 中位{dist['median']}km {dist['min']}~{dist['max']}km")
+            lines.append(f"\n【距离】匹配数: {dist['count']}")
+            lines.append(f"  均{dist['mean']}km 中位{dist['median']}km {dist['min']}~{dist['max']}km ±{dist['std']}km")
 
         curr = summary.get('current', {})
         if curr:
-            lines.append(f"\n【电压】均{curr['mean']}V 中位{curr['median']}V {curr['min']}~{curr['max']}V")
+            lines.append(f"\n【电压】计数: {curr['count']}")
+            lines.append(f"  均{curr['mean']}V 中位{curr['median']}V {curr['min']}~{curr['max']}V ±{curr['std']}V")
 
         indep = summary.get('independent', {})
         if indep:
             lines.append(f"\n【独立】{indep['independent_count']}/{indep['total']} ({indep['independent_ratio']}%)")
+
+        # 分类详细统计
+        cat_summary = summary.get('category_summary', {})
+        if cat_summary:
+            lines.append(f"\n【分类详细统计】")
+            lines.append("-" * 60)
+            for cat_name, cs in cat_summary.items():
+                lines.append(f"\n  [{cat_name}] 总数: {cs['count']}")
+                d = cs.get('distance', {})
+                if d:
+                    lines.append(f"    距离: 均{d['mean']}km 中位{d['median']}km ±{d['std']}km")
+                c = cs.get('current', {})
+                if c:
+                    lines.append(f"    电压: 均{c['mean']}V 中位{c['median']}V ±{c['std']}V")
+                ind = cs.get('independent', {})
+                if ind:
+                    lines.append(f"    独立: {ind['independent_count']}/{ind.get('dependent_count', 0)} ({ind['independent_ratio']}%)")
+            lines.append("-" * 60)
 
         lines.append("=" * 60)
         self.summary_text.setPlainText("\n".join(lines))
@@ -436,18 +456,34 @@ class AnalyseDialog(QDialog):
 
     def _display_distance(self, results):
         distance_results = results.get('distance_results', [])
+        categories = results.get('categories', {})
         self.dist_plot.clear()
         self.dist_table.setRowCount(0)
         if not distance_results:
             return
 
-        distances = [r['distance_km'] for r in distance_results]
-        y, x = np.histogram(distances, bins=20)
-        width = np.diff(x)[0] * 0.85
-        brush = pg.mkBrush(100, 150, 255, 180)
-        pen = pg.mkPen(QColor('#4fc3f7').lighter(130), width=1)
-        bar = pg.BarGraphItem(x=x[:-1], height=y, width=width, brush=brush, pen=pen)
-        self.dist_plot.addItem(bar)
+        # 如果有多分类，按分类绘制叠加直方图
+        if len(categories) > 1:
+            for cat_idx, cat_name in enumerate(categories):
+                cat_dists = [r['distance_km'] for r in distance_results if r.get('category') == cat_name]
+                if not cat_dists:
+                    continue
+                color = QColor(CATEGORY_COLORS[cat_idx % len(CATEGORY_COLORS)][0])
+                y, x = np.histogram(cat_dists, bins=20)
+                width = np.diff(x)[0] * 0.85 if len(x) > 1 else 1
+                brush = pg.mkBrush(color.red(), color.green(), color.blue(), 150)
+                pen = pg.mkPen(color.lighter(130), width=1)
+                bar = pg.BarGraphItem(x=x[:-1], height=y, width=width, brush=brush, pen=pen)
+                self.dist_plot.addItem(bar)
+        else:
+            distances = [r['distance_km'] for r in distance_results]
+            y, x = np.histogram(distances, bins=20)
+            width = np.diff(x)[0] * 0.85 if len(x) > 1 else 1
+            brush = pg.mkBrush(100, 150, 255, 180)
+            pen = pg.mkPen(QColor('#4fc3f7').lighter(130), width=1)
+            bar = pg.BarGraphItem(x=x[:-1], height=y, width=width, brush=brush, pen=pen)
+            self.dist_plot.addItem(bar)
+
         self.dist_plot.setLabel('bottom', '距离 (km)')
         self.dist_plot.setLabel('left', '数量')
 
@@ -463,18 +499,34 @@ class AnalyseDialog(QDialog):
 
     def _display_current(self, results):
         current_results = results.get('current_results', [])
+        categories = results.get('categories', {})
         self.current_plot.clear()
         self.current_table.setRowCount(0)
         if not current_results:
             return
 
-        voltages = [r['peak_voltage'] for r in current_results]
-        y, x = np.histogram(voltages, bins=20)
-        width = np.diff(x)[0] * 0.85
-        brush = pg.mkBrush(102, 187, 106, 180)
-        pen = pg.mkPen(QColor('#66bb6a').lighter(130), width=1)
-        bar = pg.BarGraphItem(x=x[:-1], height=y, width=width, brush=brush, pen=pen)
-        self.current_plot.addItem(bar)
+        # 如果有多分类，按分类绘制叠加直方图
+        if len(categories) > 1:
+            for cat_idx, cat_name in enumerate(categories):
+                cat_volts = [r['peak_voltage'] for r in current_results if r.get('category') == cat_name]
+                if not cat_volts:
+                    continue
+                color = QColor(CATEGORY_COLORS[cat_idx % len(CATEGORY_COLORS)][0])
+                y, x = np.histogram(cat_volts, bins=20)
+                width = np.diff(x)[0] * 0.85 if len(x) > 1 else 1
+                brush = pg.mkBrush(color.red(), color.green(), color.blue(), 150)
+                pen = pg.mkPen(color.lighter(130), width=1)
+                bar = pg.BarGraphItem(x=x[:-1], height=y, width=width, brush=brush, pen=pen)
+                self.current_plot.addItem(bar)
+        else:
+            voltages = [r['peak_voltage'] for r in current_results]
+            y, x = np.histogram(voltages, bins=20)
+            width = np.diff(x)[0] * 0.85 if len(x) > 1 else 1
+            brush = pg.mkBrush(102, 187, 106, 180)
+            pen = pg.mkPen(QColor('#66bb6a').lighter(130), width=1)
+            bar = pg.BarGraphItem(x=x[:-1], height=y, width=width, brush=brush, pen=pen)
+            self.current_plot.addItem(bar)
+
         self.current_plot.setLabel('bottom', '峰值电压 (V)')
         self.current_plot.setLabel('left', '数量')
 
