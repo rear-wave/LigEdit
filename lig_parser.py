@@ -9,8 +9,10 @@ analytics 包下的 trace / cluster / analyse 模块共用。
 
 import os
 import sys
+import io
 import struct
 import math
+import logging
 from decimal import Decimal
 
 import numpy as np
@@ -170,13 +172,17 @@ def ReadLigFile(FileName, skip_waveform=False):
         fp.read(4)  # StationID
         ReadGPSTimeFromLig(fp)  # firstPieceTime
         ReadGPSTimeFromLig(fp)  # lastPieceTime
+        error_count = 0
         for i in range(NumOfPiece):
             try:
                 piece = ReadPerLigPieceFromLig(fp, version, skip_waveform=skip_waveform)
                 time_key = str(piece['m_FirstPointTime'])
                 Data[time_key] = piece
             except Exception:
-                pass
+                error_count += 1
+    if error_count:
+        logging.warning("ReadLigFile(%s): %d/%d pieces failed to parse",
+                        os.path.basename(FileName), error_count, NumOfPiece)
     return Data
 
 
@@ -184,33 +190,37 @@ def ReadLigFileWithOffsets(FileName):
     with open(FileName, 'rb') as fp:
         raw_data = fp.read()
 
-    with open(FileName, 'rb') as fp:
-        header = {}
-        header['version'] = struct.unpack('i', fp.read(4))[0]
-        header['NumOfPiece'] = struct.unpack('i', fp.read(4))[0]
-        header['firstPieceCacheCount'] = struct.unpack('L', fp.read(4))[0]
-        header['lastPieceCacheCount'] = struct.unpack('L', fp.read(4))[0]
-        header['FirstPieceCachePlace'] = struct.unpack('L', fp.read(4))[0]
-        header['LastPieceCachePlace'] = struct.unpack('L', fp.read(4))[0]
-        header['SamplingEventID'] = struct.unpack('i', fp.read(4))[0]
-        header['StationID'] = struct.unpack('i', fp.read(4))[0]
-        header['m_firstPieceTime'] = ReadGPSTimeFromLig(fp)
-        header['m_lastPieceTime'] = ReadGPSTimeFromLig(fp)
+    fp = io.BytesIO(raw_data)
+    header = {}
+    header['version'] = struct.unpack('i', fp.read(4))[0]
+    header['NumOfPiece'] = struct.unpack('i', fp.read(4))[0]
+    header['firstPieceCacheCount'] = struct.unpack('L', fp.read(4))[0]
+    header['lastPieceCacheCount'] = struct.unpack('L', fp.read(4))[0]
+    header['FirstPieceCachePlace'] = struct.unpack('L', fp.read(4))[0]
+    header['LastPieceCachePlace'] = struct.unpack('L', fp.read(4))[0]
+    header['SamplingEventID'] = struct.unpack('i', fp.read(4))[0]
+    header['StationID'] = struct.unpack('i', fp.read(4))[0]
+    header['m_firstPieceTime'] = ReadGPSTimeFromLig(fp)
+    header['m_lastPieceTime'] = ReadGPSTimeFromLig(fp)
 
-        header_size = fp.tell()
+    header_size = fp.tell()
 
-        pieces = []
-        piece_offsets = []
-        for i in range(header['NumOfPiece']):
-            offset_start = fp.tell()
-            try:
-                piece = ReadPerLigPieceFromLig(fp, header['version'])
-                offset_end = fp.tell()
-                time_key = str(piece['m_FirstPointTime'])
-                pieces.append((time_key, piece))
-                piece_offsets.append((offset_start, offset_end))
-            except Exception:
-                pass
+    pieces = []
+    piece_offsets = []
+    error_count = 0
+    for i in range(header['NumOfPiece']):
+        offset_start = fp.tell()
+        try:
+            piece = ReadPerLigPieceFromLig(fp, header['version'])
+            offset_end = fp.tell()
+            time_key = str(piece['m_FirstPointTime'])
+            pieces.append((time_key, piece))
+            piece_offsets.append((offset_start, offset_end))
+        except Exception:
+            error_count += 1
+    if error_count:
+        logging.warning("ReadLigFileWithOffsets(%s): %d/%d pieces failed to parse",
+                        os.path.basename(FileName), error_count, header['NumOfPiece'])
 
     return header, pieces, raw_data, piece_offsets, header_size
 
@@ -220,9 +230,9 @@ def ReadLigFileWithOffsets(FileName):
 # ============================================================================
 
 def ButterFilter(piece):
-    fc = 300000
-    fs = 5000000
-    order = 4
+    fc = 100000       # 截止频率 100 kHz（原 300 kHz，噪声过滤不足）
+    fs = 5000000      # 采样率 5 MHz
+    order = 4         # 4 阶
     fc_normalized = fc / (fs / 2)
     b, a = butter(order, fc_normalized, btype='low')
     return filtfilt(b, a, piece)
@@ -244,7 +254,10 @@ def CutPieceTo16000(piece):
 
 
 def compute_final_time(lig_time, piece):
-    """从 lig 时间和波形数据计算精确时间"""
+    """从 lig 时间和波形数据计算精确时间
+
+    返回: (final_time_str, filtered_piece, lig_time_str)
+    """
     y = CutPieceTo16000(piece - np.mean(piece))
     y = ButterFilter(y)
     y_abs = np.abs(y)
@@ -256,7 +269,7 @@ def compute_final_time(lig_time, piece):
     real_time1 = Time1 + Decimal(str(trigger_time)) * Decimal('0.001')
     real_time = f"{real_time1:.7f}"
     final_time = f"{lig_time.split('.')[0]}.{real_time.split('.')[1]}"
-    return final_time
+    return final_time, y, lig_time
 
 
 def compute_peak_voltage(piece_data):
@@ -411,6 +424,35 @@ def format_txt_time(txt_time_str):
 def time_str_to_decimal(time_str):
     """将时间字符串转换为 Decimal 以便精确比较"""
     return Decimal(time_str)
+
+
+def parse_wwlln_time_to_decimal(date_str, time_str):
+    """解析 WWLLN 时间到 YYMMDDhhmmss.ffffff 格式 Decimal"""
+    try:
+        date_str = date_str.strip().rstrip(',')
+        time_str = time_str.strip().rstrip(',')
+        parts = date_str.split('/')
+        if len(parts) != 3:
+            return None
+        year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+        time_parts = time_str.split(':')
+        if len(time_parts) < 3:
+            return None
+        hour, minute = int(time_parts[0]), int(time_parts[1])
+        sec_part = time_parts[2]
+        if '.' in sec_part:
+            sec_str, usec_str = sec_part.split('.', 1)
+            second = int(sec_str)
+            usec_str = usec_str[:6].ljust(6, '0')
+            decimal_part = f".{usec_str}"
+        else:
+            second = int(sec_part)
+            decimal_part = ".000000"
+        year_short = year % 100
+        return Decimal(f"{year_short:02d}{month:02d}{day:02d}"
+                       f"{hour:02d}{minute:02d}{second:02d}{decimal_part}")
+    except Exception:
+        return None
 
 
 def deg2rad(deg):

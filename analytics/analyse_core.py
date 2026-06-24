@@ -68,7 +68,7 @@ def load_lig_pieces(lig_dir, progress_cb=None, skip_waveform=False, category=Non
                     peak_v = None
                 else:
                     piece = np.array(piece_data['0'])
-                    final_time = compute_final_time(time_key, piece)
+                    final_time, _, _ = compute_final_time(time_key, piece)
                     peak_v = compute_peak_voltage(piece_data)
 
                 all_pieces.append({
@@ -83,8 +83,9 @@ def load_lig_pieces(lig_dir, progress_cb=None, skip_waveform=False, category=Non
                     'lightning_lon': piece_data.get('m_LightningLocationLon', None),
                     'category': category,
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                if progress_cb:
+                    progress_cb(f"[警告] 片段 {time_key}: {e}", -1)
 
         del lig_data
 

@@ -18,10 +18,10 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QPushButton, QTextEdit,
     QProgressBar, QSpinBox, QDoubleSpinBox, QCheckBox,
-    QMessageBox, QFileDialog, QFrame,
+    QMessageBox, QFileDialog, QFrame, QScrollArea, QSizePolicy,
 )
 
-from lig_parser import _resource_path, load_station_coords
+from lig_parser import _resource_path, load_station_coords, ReadLigFile, match_station_name
 
 
 # ============================================================================
@@ -187,7 +187,13 @@ class TraceDialog(QDialog):
         btn_add.clicked.connect(lambda: self._add_station_row())
         station_toolbar.addWidget(btn_add)
 
-        btn_import = QPushButton("\U0001f4c4 从配置文件导入")
+        btn_import_lig = QPushButton("📁 从LIG文件导入")
+        btn_import_lig.setToolTip("选择一个或多个 .lig 文件，自动提取站点名、经纬度并填充数据目录")
+        btn_import_lig.clicked.connect(self._import_from_lig_files)
+        station_toolbar.addWidget(btn_import_lig)
+
+        btn_import = QPushButton("📄 从配置文件导入")
+        btn_import.setToolTip("从站点经纬度.txt 导入站点名称和坐标")
         btn_import.clicked.connect(self._import_stations)
         station_toolbar.addWidget(btn_import)
 
@@ -196,7 +202,14 @@ class TraceDialog(QDialog):
 
         self.stations_frame = QFrame()
         self.station_scroll_layout = QVBoxLayout(self.stations_frame)
-        station_layout.addWidget(self.stations_frame)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(self.stations_frame)
+        scroll_area.setMinimumHeight(120)
+        scroll_area.setMaximumHeight(300)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        station_layout.addWidget(scroll_area)
         layout.addWidget(station_group)
 
         # ---- 路径配置 ----
@@ -283,6 +296,7 @@ class TraceDialog(QDialog):
         # 添加默认空行
         for _ in range(3):
             self._add_station_row()
+        self.station_scroll_layout.addStretch()
 
     # ------------------------------------------------------------------
     #  站点操作
@@ -382,6 +396,48 @@ class TraceDialog(QDialog):
             QMessageBox.information(self, "导入完成", f"已导入 {imported} 个站点\n请为每个站点指定 LIG 数据目录")
         except Exception as e:
             QMessageBox.critical(self, "导入失败", str(e))
+
+    def _import_from_lig_files(self):
+        """从 .lig 文件直接导入：自动提取站点信息并填充数据目录"""
+        lig_files, _ = QFileDialog.getOpenFileNames(
+            self, "选择 LIG 文件（可多选）",
+            "", "LIG 文件 (*.lig);;所有文件 (*)")
+        if not lig_files:
+            return
+
+        station_coords = load_station_coords()
+        discovered = {}  # {station_name: (lat, lon, directory)}
+
+        total_files = len(lig_files)
+        for idx, lig_path in enumerate(lig_files):
+            self.progress_label.setText(f"扫描 {os.path.basename(lig_path)} ({idx+1}/{total_files})")
+            try:
+                lig_data = ReadLigFile(lig_path, skip_waveform=True)
+            except Exception:
+                continue
+            for time_key, piece_data in lig_data.items():
+                lat = piece_data.get('m_GPSCurrentLocationLat', 0)
+                lon = piece_data.get('m_GPSCurrentLocationLon', 0)
+                if not lat or not lon:
+                    continue
+                sname = match_station_name(lat, lon, station_coords)
+                directory = os.path.dirname(lig_path)
+                if sname not in discovered:
+                    discovered[sname] = (lat, lon, directory)
+
+        self.progress_label.setText("就绪")
+        if not discovered:
+            QMessageBox.warning(self, "无站点数据",
+                "未从选中文件中检测到站点信息。\n请确认文件包含有效的 GPS 坐标。")
+            return
+
+        imported = 0
+        for sname, (lat, lon, directory) in sorted(discovered.items()):
+            self._add_station_row(name=sname, lat=str(lat), lon=str(lon), directory=directory)
+            imported += 1
+
+        QMessageBox.information(self, "导入完成",
+            f"已导入 {imported} 个站点\n每个站点的 LIG 数据目录已自动填充。\n如需调整目录，请手动修改。")
 
     # ------------------------------------------------------------------
     #  日志轮询 + 彩色

@@ -64,7 +64,7 @@ def load_lig_pieces(lig_dir, progress_cb=None):
                 if '0' not in piece_data:
                     continue
                 piece = np.array(piece_data['0'])
-                final_time = compute_final_time(time_key, piece)
+                final_time, _, _ = compute_final_time(time_key, piece)
                 peak_v = compute_peak_voltage(piece_data)
                 voltage = voltage_from_piece(piece_data)
 
@@ -77,8 +77,9 @@ def load_lig_pieces(lig_dir, progress_cb=None):
                     'station_lat': piece_data.get('m_GPSCurrentLocationLat', 0),
                     'station_lon': piece_data.get('m_GPSCurrentLocationLon', 0),
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                if progress_cb:
+                    progress_cb(f"[警告] 片段 {time_key}: {e}", -1)
 
     all_pieces.sort(key=lambda x: Decimal(x['final_time']))
     return all_pieces
@@ -194,7 +195,7 @@ def extract_waveform_features(voltage, fs=5000000):
     }
 
 
-def build_feature_matrix(pieces, feature_mode='handcraft', filter_fc=300000, fs=5000000,
+def build_feature_matrix(pieces, feature_mode='handcraft', filter_fc=100000, fs=5000000,
                          progress_cb=None):
     """构建特征矩阵
 
@@ -512,7 +513,7 @@ def export_cluster_timestamps(pieces, labels, valid_indices, output_dir, progres
 
 def run_full_clustering(pieces, feature_mode='handcraft', algorithm='kmeans',
                         n_clusters=3, dbscan_eps=0.5, dbscan_min_samples=5,
-                        agglomerative_linkage='ward', filter_fc=300000,
+                        agglomerative_linkage='ward', filter_fc=100000,
                         dim_reduction='tsne', export_dir=None,
                         lig_head_path=None, lig_file_head_path=None,
                         progress_cb=None):

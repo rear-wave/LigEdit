@@ -21,8 +21,8 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QShortcut, QLabel)
 SCOPE_STYLE = {
     'bg_color': '#0a0a14',
     'grid_color': '#1a1a2e',
-    'raw_color': '#ff1493',          # 原始波形: 荧光粉
-    'filtered_color': '#ffffff',     # 滤波波形: 白色
+    'raw_color': '#ff1493',          # 原始波形: 荧光粉（不变）
+    'filtered_color': '#ffffff',     # 滤波波形: 白色（不变）
     'wave_color_deleted': '#ff4444',
     'wave_color_checked': '#00d4ff',
     'text_color': '#cccccc',
@@ -176,15 +176,15 @@ class WaveformWidget(QWidget):
             ax.setPen(QPen(QColor(SCOPE_STYLE['axis_color']), 1))
             ax.setStyle(tickFont=QFont('Consolas', 9))
 
-        # 原始波形(粉色, 先绘制, 在底层)
+        # 原始波形(粉, 先绘制, 在底层, 细线)
         self.detail_raw_curve = self.detail_plot.plot(
-            pen=pg.mkPen(color=SCOPE_STYLE['raw_color'], width=1.0),
+            pen=pg.mkPen(color=SCOPE_STYLE['raw_color'], width=0.5),
             autoDownsample=True,
             clipToView=True,
         )
-        # 滤波波形(白色, 后绘制, 在顶层)
+        # 滤波波形(白, 后绘制, 在顶层, 略粗)
         self.detail_curve = self.detail_plot.plot(
-            pen=pg.mkPen(color=SCOPE_STYLE['filtered_color'], width=1.2),
+            pen=pg.mkPen(color=SCOPE_STYLE['filtered_color'], width=1.0),
             autoDownsample=True,
             clipToView=True,
         )
@@ -203,14 +203,14 @@ class WaveformWidget(QWidget):
             ax.setStyle(tickFont=QFont('Consolas', 8))
         self.overview_plot.setLabel('left', '')
 
-        # 原始波形(粉色)
+        # 原始波形(粉, 细线)
         self.overview_raw_curve = self.overview_plot.plot(
-            pen=pg.mkPen(color=SCOPE_STYLE['raw_color'], width=0.6),
+            pen=pg.mkPen(color=SCOPE_STYLE['raw_color'], width=0.3),
             autoDownsample=True,
         )
-        # 滤波波形(白色)
+        # 滤波波形(白)
         self.overview_curve = self.overview_plot.plot(
-            pen=pg.mkPen(color=SCOPE_STYLE['filtered_color'], width=0.8),
+            pen=pg.mkPen(color=SCOPE_STYLE['filtered_color'], width=0.6),
             autoDownsample=True,
         )
         layout.addWidget(self.overview_plot, stretch=1)
@@ -390,8 +390,8 @@ class WaveformWidget(QWidget):
         # 原始波形
         if raw_data is not None and len(raw_data) > 0:
             raw_arr = np.asarray(raw_data, dtype=np.float64)
-            self.detail_raw_curve.setPen(pg.mkPen(color=raw_color, width=1.0))
-            self.overview_raw_curve.setPen(pg.mkPen(color=raw_color, width=0.6))
+            self.detail_raw_curve.setPen(pg.mkPen(color=raw_color, width=0.5))
+            self.overview_raw_curve.setPen(pg.mkPen(color=raw_color, width=0.3))
             self.detail_raw_curve.setData(self._time_array[:len(raw_arr)], raw_arr)
             self.overview_raw_curve.setData(self._time_array[:len(raw_arr)], raw_arr)
         else:
@@ -399,8 +399,8 @@ class WaveformWidget(QWidget):
             self.overview_raw_curve.setData([], [])
 
         # 滤波波形
-        self.detail_curve.setPen(pg.mkPen(color=filt_color, width=1.2))
-        self.overview_curve.setPen(pg.mkPen(color=filt_color, width=0.8))
+        self.detail_curve.setPen(pg.mkPen(color=filt_color, width=1.0))
+        self.overview_curve.setPen(pg.mkPen(color=filt_color, width=0.6))
         self.detail_curve.setData(self._time_array, self._data)
         self.overview_curve.setData(self._time_array, self._data)
 

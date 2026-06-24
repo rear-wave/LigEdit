@@ -10,19 +10,18 @@ analytics / trace_core — 多站闪电事件匹配核心逻辑
 
 import os
 import struct
-import math
 import time as time_module
 import logging
 from datetime import datetime
 from decimal import Decimal
 from bisect import bisect_left
-from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
 
 from lig_parser import (
     ReadLigFile, compute_final_time, repacklig, _resource_path,
+    haversine_distance, parse_wwlln_time_to_decimal,
 )
 
 
@@ -35,56 +34,9 @@ EARTH_RADIUS_KM = 6371.0
 
 
 # ============================================================================
-#                          地理工具
-# ============================================================================
-
-def deg2rad(deg: float) -> float:
-    return deg * (math.pi / 180.0)
-
-
-def spherical_distance(lat1: float, lon1: float,
-                       lat2: float, lon2: float) -> float:
-    """球面距离 (km)，使用球面余弦定理"""
-    lat1_r, lon1_r = deg2rad(lat1), deg2rad(lon1)
-    lat2_r, lon2_r = deg2rad(lat2), deg2rad(lon2)
-    cos_angle = (math.sin(lat1_r) * math.sin(lat2_r)
-                 + math.cos(lat1_r) * math.cos(lat2_r)
-                 * math.cos(lon1_r - lon2_r))
-    cos_angle = max(min(cos_angle, 1.0), -1.0)
-    return EARTH_RADIUS_KM * math.acos(cos_angle)
-
-
-# ============================================================================
 #                          WWLLN 数据加载
 # ============================================================================
 
-def parse_wwlln_time_to_decimal(date_str: str, time_str: str) -> Optional[Decimal]:
-    """解析 WWLLN 时间到 YYMMDDhhmmss.ffffff 格式 Decimal"""
-    try:
-        date_str = date_str.strip().rstrip(',')
-        time_str = time_str.strip().rstrip(',')
-        parts = date_str.split('/')
-        if len(parts) != 3:
-            return None
-        year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-        time_parts = time_str.split(':')
-        if len(time_parts) < 3:
-            return None
-        hour, minute = int(time_parts[0]), int(time_parts[1])
-        sec_part = time_parts[2]
-        if '.' in sec_part:
-            sec_str, usec_str = sec_part.split('.')
-            second = int(sec_str)
-            usec_str = usec_str[:6].ljust(6, '0')
-            decimal_part = f".{usec_str}"
-        else:
-            second = int(sec_part)
-            decimal_part = ".000000"
-        year_short = year % 100
-        return Decimal(f"{year_short:02d}{month:02d}{day:02d}"
-                       f"{hour:02d}{minute:02d}{second:02d}{decimal_part}")
-    except Exception:
-        return None
 
 
 def load_wwlln_data(wwlln_folder: str, target_day: str = None) -> pd.DataFrame:
@@ -123,7 +75,7 @@ def load_wwlln_data(wwlln_folder: str, target_day: str = None) -> pd.DataFrame:
     return combined
 
 
-def load_wwlln_events(wwlln_dir: str, target_day: str = None) -> List[dict]:
+def load_wwlln_events(wwlln_dir: str, target_day: str = None) -> list[dict]:
     """加载所有 WWLLN 事件，返回按时间排序的 dict 列表
 
     target_day: 可选，格式 "YYMMDD"，仅加载指定日期的数据
@@ -148,7 +100,7 @@ def load_wwlln_events(wwlln_dir: str, target_day: str = None) -> List[dict]:
 # ============================================================================
 
 def load_station_timeline(station_dir: str, station_name: str,
-                          logger: logging.Logger) -> Tuple[List[Decimal], List[tuple]]:
+                          logger: logging.Logger) -> tuple[list[Decimal], list[tuple]]:
     """扫描 station_dir 中所有 .lig 文件，计算每段的 final_time
 
     返回:
@@ -181,7 +133,7 @@ def load_station_timeline(station_dir: str, station_name: str,
                 continue
             # compute_final_time 内部已做 demean → CutPieceTo16000 → ButterFilter
             # 返回 (final_time_dec, filtered_piece, lig_time_str)
-            final_time_dec, v_filtered, _ = compute_final_time(piece_f64, lig_time_str)
+            final_time_dec, v_filtered, _ = compute_final_time(lig_time_str, piece_f64)
             raw_entries.append((final_time_dec, v_filtered, lig_time_str, raw_uint16))
 
     raw_entries.sort(key=lambda x: x[0])
@@ -204,9 +156,9 @@ def compute_expected_arrival(wwlln_time: Decimal, distance_km: float) -> Decimal
     return wwlln_time + Decimal(str(distance_km)) / SPEED_OF_LIGHT_KM_S
 
 
-def find_closest_piece(times: List[Decimal], used: set,
+def find_closest_piece(times: list[Decimal], used: set,
                        target: Decimal, window: Decimal
-                       ) -> Optional[Tuple[int, Decimal]]:
+                       ) -> tuple[int, Decimal] | None:
     """二分搜索在 times 中最接近 target 且未使用且满足 ±window 的项"""
     idx = bisect_left(times, target)
     best_idx = None
@@ -227,7 +179,7 @@ def find_closest_piece(times: List[Decimal], used: set,
     return None
 
 
-def match_events(wwlln_events: List[dict],
+def match_events(wwlln_events: list[dict],
                  station_data: dict,
                  time_window: Decimal,
                  min_stations: int,
@@ -253,7 +205,7 @@ def match_events(wwlln_events: List[dict],
         station_matches = []
         for sta_name, sdata in station_data.items():
             sta_lat, sta_lon = sdata['lat'], sdata['lon']
-            dist = spherical_distance(wwlln_lat, wwlln_lon, sta_lat, sta_lon)
+            dist = haversine_distance(wwlln_lat, wwlln_lon, sta_lat, sta_lon)
             expected = compute_expected_arrival(wwlln_time, dist)
 
             result = find_closest_piece(

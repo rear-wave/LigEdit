@@ -8,9 +8,7 @@ pipeline - 闪电数据处理5步流水线后端
 
 import os
 import bisect
-import math
 from decimal import Decimal, getcontext
-from os.path import getsize
 
 import numpy as np
 import pandas as pd
@@ -18,74 +16,22 @@ import pandas as pd
 from lig_parser import (
     ReadLigFile, ButterFilter, compute_final_time, repacklig,
     time_classifier_display, load_station_coords, match_station_name,
+    format_txt_time, haversine_distance, deg2rad, PieceWriter,
+    parse_wwlln_time_to_decimal, _resource_path,
 )
 
 getcontext().prec = 40
 EARTH_RADIUS = 6371.0
 C_KM_S = Decimal("299792.458")
+MAX_PIECES_PER_FILE = 512
+DEFAULT_MAX_TIME_DIFF_S = Decimal("0.011")
+DEFAULT_MAX_DISTANCE_KM = 3500.0
+DEFAULT_TOLERANCE_RATIO = 0.1
 
 
 # ============================================================================
 #                          工具函数
 # ============================================================================
-
-def deg2rad(deg):
-    return deg * (math.pi / 180.0)
-
-
-def haversine_distance(lat1, lon1, lat2, lon2):
-    """Haversine公式计算球面距离（km）"""
-    lat1_r, lon1_r = deg2rad(lat1), deg2rad(lon1)
-    lat2_r, lon2_r = deg2rad(lat2), deg2rad(lon2)
-    dlat = lat2_r - lat1_r
-    dlon = lon2_r - lon1_r
-    a = (math.sin(dlat / 2) ** 2 +
-         math.cos(lat1_r) * math.cos(lat2_r) * math.sin(dlon / 2) ** 2)
-    return EARTH_RADIUS * 2 * math.asin(math.sqrt(min(a, 1.0)))
-
-
-def format_txt_time(txt_time_str):
-    """将TXT时间统一为 'YYMMDDhhmmss.fffffff'（7位小数）"""
-    s = str(txt_time_str).strip()
-    if '.' in s:
-        ip, fp = s.split('.', 1)
-    else:
-        ip, fp = s, ''
-    if len(ip) < 12:
-        ip = ip.zfill(12)
-    elif len(ip) > 12:
-        ip = ip[:12]
-    fp = (fp + '0' * 7)[:7]
-    return f"{ip}.{fp}"
-
-
-def parse_wwlln_time_to_decimal(date_str, time_str):
-    """解析WWLLN时间并转换为Decimal格式"""
-    try:
-        date_str = date_str.strip().rstrip(',')
-        time_str = time_str.strip().rstrip(',')
-        parts = date_str.split('/')
-        if len(parts) != 3:
-            return None
-        year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-        time_parts = time_str.split(':')
-        if len(time_parts) < 3:
-            return None
-        hour, minute = int(time_parts[0]), int(time_parts[1])
-        sec_part = time_parts[2]
-        if '.' in sec_part:
-            sec_str, usec_str = sec_part.split('.', 1)
-            second = int(sec_str)
-            usec_str = usec_str[:6].ljust(6, '0')
-            decimal_part = f".{usec_str}"
-        else:
-            second = int(sec_part)
-            decimal_part = ".000000"
-        year_short = year % 100
-        return Decimal(f"{year_short:02d}{month:02d}{day:02d}{hour:02d}{minute:02d}{second:02d}{decimal_part}")
-    except Exception:
-        return None
-
 
 def check_distance_tolerance(actual_dist, time_diff, tolerance_ratio=0.1):
     """检查实际距离与时间差对应距离是否符合容差要求"""
@@ -95,55 +41,12 @@ def check_distance_tolerance(actual_dist, time_diff, tolerance_ratio=0.1):
     return round(time_diff_dist, 3), is_ok
 
 
-class _PieceWriter:
-    """lig片段写入器：512条自动分卷，文件名格式 站点名_首条时间戳.lig"""
-
-    def __init__(self, output_dir, station_name, lig_file_head_path):
-        self.output_dir = output_dir
-        self.station_name = station_name
-        self.lig_file_head_path = lig_file_head_path
-        self.current_path = None
-        self.current_fp = None
-        self.piece_count = 0
-        self.root_time = None
-        self.file_index = 1
-        self.total_written = 0
-
-    def write(self, piece_data, time_key):
-        if self.piece_count >= 512 or self.current_fp is None:
-            self._start_new_file(time_key)
-        self.current_fp.write(piece_data)
-        self.piece_count += 1
-        self.total_written += 1
-
-    def _start_new_file(self, time_key):
-        self.close()
-        if self.root_time is None:
-            self.root_time = time_key
-        if self.file_index == 1:
-            filename = f"{self.station_name}_{self.root_time}.lig"
-        else:
-            filename = f"{self.station_name}_{self.root_time}_{self.file_index}.lig"
-        self.current_path = os.path.join(self.output_dir, filename)
-        self.current_fp = open(self.current_path, 'wb')
-        if os.path.exists(self.lig_file_head_path):
-            with open(self.lig_file_head_path, 'rb') as hf:
-                self.current_fp.write(hf.read())
-        self.piece_count = 0
-        self.file_index += 1
-
-    def close(self):
-        if self.current_fp is not None:
-            self.current_fp.close()
-            self.current_fp = None
-
-
-def _extract_txt_time_column(input_file, output_file):
-    """提取txt文件中第一列（TXT_Time）数据"""
-    with open(input_file, 'r', encoding='utf-8') as f_in, \
-            open(output_file, 'w', encoding='utf-8') as f_out:
+def _extract_txt_time_values(txt_file):
+    """从匹配txt文件中提取第一列时间数据，返回排序后的 Decimal 列表"""
+    times = []
+    with open(txt_file, 'r', encoding='utf-8') as f:
         is_first = True
-        for line in f_in:
+        for line in f:
             line = line.strip()
             if not line:
                 continue
@@ -152,7 +55,11 @@ def _extract_txt_time_column(input_file, output_file):
                 continue
             parts = line.split('\t')
             if parts:
-                f_out.write(parts[0] + '\n')
+                try:
+                    times.append(Decimal(parts[0]))
+                except Exception:
+                    pass
+    return sorted(times)
 
 
 # ============================================================================
@@ -184,7 +91,7 @@ def step1_extract_timestamps(maindir, output_txt, progress_cb=None, log_cb=None)
         for time_key in lig_data:
             try:
                 piece = np.array(lig_data[time_key]['0'])
-                final_time = compute_final_time(time_key, piece)
+                final_time, _, _ = compute_final_time(time_key, piece)
                 all_times.append(final_time)
             except Exception as e:
                 if log_cb:
@@ -370,14 +277,9 @@ def step4_extract_lig(distance_files, lig_maindir, lig_head_path, lig_file_head_
     for start_dist, end_dist, dist_txt_file in distance_files:
         dist_tag = f"{start_dist}-{end_dist}km"
         base_dir = os.path.dirname(dist_txt_file)
-        temp_txt = os.path.join(base_dir, "_temp_times.txt")
-        _extract_txt_time_column(dist_txt_file, temp_txt)
         output_dir = os.path.join(base_dir, dist_tag)
         os.makedirs(output_dir, exist_ok=True)
-        with open(temp_txt, 'r') as f:
-            txt_times = sorted([Decimal(line.strip()) for line in f if line.strip()])
-        if os.path.exists(temp_txt):
-            os.remove(temp_txt)
+        txt_times = _extract_txt_time_values(dist_txt_file)
         txt_set = set(txt_times)
         range_info.append({
             'dist_tag': dist_tag, 'txt_times': txt_times, 'txt_set': txt_set,
@@ -409,9 +311,11 @@ def step4_extract_lig(distance_files, lig_maindir, lig_head_path, lig_file_head_
                 if '0' not in piece_data:
                     continue
                 piece = np.array(piece_data['0'])
-                final_time = compute_final_time(time_key, piece)
+                final_time, _, _ = compute_final_time(time_key, piece)
                 final_dec = Decimal(final_time)
-            except Exception:
+            except Exception as e:
+                if log_cb:
+                    log_cb(f"[警告] 处理片段 {time_key} 失败: {e}")
                 continue
             for rinfo in range_info:
                 if final_dec in rinfo['txt_set']:
@@ -425,7 +329,7 @@ def step4_extract_lig(distance_files, lig_maindir, lig_head_path, lig_file_head_
                             lon = piece_data.get('m_GPSCurrentLocationLon', 0)
                             sname = match_station_name(lat, lon, station_coords) if (lat and lon) else "UNKNOWN"
                             if sname not in rinfo['writers']:
-                                rinfo['writers'][sname] = _PieceWriter(
+                                rinfo['writers'][sname] = PieceWriter(
                                     rinfo['output_dir'], sname, lig_file_head_path)
                             rinfo['writers'][sname].write(event, time_key)
                             rinfo['match_count'] += 1
@@ -483,8 +387,9 @@ def step5_day_night_classifier(input_folders, lig_head_path, lig_file_head_path,
                 for time_key, piece_data in lig_data.items():
                     if '0' in piece_data:
                         pieces.append((time_key, piece_data))
-            except Exception:
-                pass
+            except Exception as e:
+                if log_cb:
+                    log_cb(f"[警告] 读取 {lf}: {e}")
         pieces.sort(key=lambda x: x[0])
 
         output_subfolders = {
@@ -508,7 +413,7 @@ def step5_day_night_classifier(input_folders, lig_head_path, lig_file_head_path,
                 sname = match_station_name(lat, lon, station_coords) if (lat and lon) else "UNKNOWN"
                 writer_key = (period_en, sname)
                 if writer_key not in writers:
-                    writers[writer_key] = _PieceWriter(
+                    writers[writer_key] = PieceWriter(
                         output_subfolders[period_en], sname, lig_file_head_path)
                 writers[writer_key].write(packed, time_key)
             except Exception as e:
@@ -715,7 +620,7 @@ def classify_by_daynight(lig_dir, output_dir, lig_head_path, lig_file_head_path,
             writer_key = (period_en, sname)
             if writer_key not in writers:
                 out_dir = day_dir if period_en == "day" else night_dir
-                writers[writer_key] = _PieceWriter(out_dir, sname, lig_file_head_path)
+                writers[writer_key] = PieceWriter(out_dir, sname, lig_file_head_path)
             writers[writer_key].write(packed, time_key)
         except Exception as e:
             if log_cb:

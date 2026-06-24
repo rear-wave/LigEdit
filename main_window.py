@@ -23,9 +23,10 @@ from waveform_widget import WaveformWidget, SCOPE_STYLE
 from lig_parser import (
     ButterFilter, load_station_coords, match_station_name,
     format_time_display, time_classifier_display,
+    ReadLigFileWithOffsets,
 )
 from lig_editor import (
-    ReadLigFileWithOffsets, SaveLigFile, MergeLigFiles,
+    SaveLigFile, MergeLigFiles,
 )
 
 

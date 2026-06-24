@@ -462,18 +462,32 @@ class AnalyseDialog(QDialog):
         if not distance_results:
             return
 
-        # 如果有多分类，按分类绘制叠加直方图
-        if len(categories) > 1:
-            for cat_idx, cat_name in enumerate(categories):
-                cat_dists = [r['distance_km'] for r in distance_results if r.get('category') == cat_name]
+        # 分组柱状图：多分类时并排显示，避免叠加挤压
+        categories_list = [c for c in categories
+                           if any(r.get('category') == c for r in distance_results)]
+        n_cats = max(len(categories_list), 1)
+
+        if n_cats > 1:
+            all_dists = [r['distance_km'] for r in distance_results]
+            hist_min = min(all_dists) if all_dists else 0
+            hist_max = max(all_dists) if all_dists else 100
+            bin_edges = np.linspace(hist_min, hist_max, 21)
+            bar_width = (bin_edges[1] - bin_edges[0]) * 0.85 / n_cats
+            offset_step = bar_width
+
+            for cat_idx, cat_name in enumerate(categories_list):
+                cat_dists = [r['distance_km'] for r in distance_results
+                             if r.get('category') == cat_name]
                 if not cat_dists:
                     continue
+                y, _ = np.histogram(cat_dists, bins=bin_edges)
+                x_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                offset = (cat_idx - (n_cats - 1) / 2) * offset_step
                 color = QColor(CATEGORY_COLORS[cat_idx % len(CATEGORY_COLORS)][0])
-                y, x = np.histogram(cat_dists, bins=20)
-                width = np.diff(x)[0] * 0.85 if len(x) > 1 else 1
-                brush = pg.mkBrush(color.red(), color.green(), color.blue(), 150)
+                brush = pg.mkBrush(color.red(), color.green(), color.blue(), 180)
                 pen = pg.mkPen(color.lighter(130), width=1)
-                bar = pg.BarGraphItem(x=x[:-1], height=y, width=width, brush=brush, pen=pen)
+                bar = pg.BarGraphItem(x=x_centers + offset, height=y,
+                                      width=bar_width, brush=brush, pen=pen)
                 self.dist_plot.addItem(bar)
         else:
             distances = [r['distance_km'] for r in distance_results]
@@ -486,6 +500,7 @@ class AnalyseDialog(QDialog):
 
         self.dist_plot.setLabel('bottom', '距离 (km)')
         self.dist_plot.setLabel('left', '数量')
+        self.dist_plot.autoRange()
 
         self.dist_table.setRowCount(len(distance_results))
         for i, r in enumerate(distance_results):
@@ -505,18 +520,32 @@ class AnalyseDialog(QDialog):
         if not current_results:
             return
 
-        # 如果有多分类，按分类绘制叠加直方图
-        if len(categories) > 1:
-            for cat_idx, cat_name in enumerate(categories):
-                cat_volts = [r['peak_voltage'] for r in current_results if r.get('category') == cat_name]
+        # 分组柱状图：多分类时并排显示
+        categories_list = [c for c in categories
+                           if any(r.get('category') == c for r in current_results)]
+        n_cats = max(len(categories_list), 1)
+
+        if n_cats > 1:
+            all_volts = [r['peak_voltage'] for r in current_results]
+            hist_min = min(all_volts) if all_volts else 0
+            hist_max = max(all_volts) if all_volts else 1
+            bin_edges = np.linspace(hist_min, hist_max, 21)
+            bar_width = (bin_edges[1] - bin_edges[0]) * 0.85 / n_cats
+            offset_step = bar_width
+
+            for cat_idx, cat_name in enumerate(categories_list):
+                cat_volts = [r['peak_voltage'] for r in current_results
+                             if r.get('category') == cat_name]
                 if not cat_volts:
                     continue
+                y, _ = np.histogram(cat_volts, bins=bin_edges)
+                x_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                offset = (cat_idx - (n_cats - 1) / 2) * offset_step
                 color = QColor(CATEGORY_COLORS[cat_idx % len(CATEGORY_COLORS)][0])
-                y, x = np.histogram(cat_volts, bins=20)
-                width = np.diff(x)[0] * 0.85 if len(x) > 1 else 1
-                brush = pg.mkBrush(color.red(), color.green(), color.blue(), 150)
+                brush = pg.mkBrush(color.red(), color.green(), color.blue(), 180)
                 pen = pg.mkPen(color.lighter(130), width=1)
-                bar = pg.BarGraphItem(x=x[:-1], height=y, width=width, brush=brush, pen=pen)
+                bar = pg.BarGraphItem(x=x_centers + offset, height=y,
+                                      width=bar_width, brush=brush, pen=pen)
                 self.current_plot.addItem(bar)
         else:
             voltages = [r['peak_voltage'] for r in current_results]
@@ -529,6 +558,7 @@ class AnalyseDialog(QDialog):
 
         self.current_plot.setLabel('bottom', '峰值电压 (V)')
         self.current_plot.setLabel('left', '数量')
+        self.current_plot.autoRange()
 
         self.current_table.setRowCount(len(current_results))
         for i, r in enumerate(current_results):
