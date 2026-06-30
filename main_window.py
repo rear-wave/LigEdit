@@ -29,6 +29,13 @@ from lig_editor import (
     SaveLigFile, MergeLigFiles,
 )
 
+# 波形分类模块 (ONNX Runtime)
+try:
+    from classify_module import classify_batch_raw, classify_single, is_model_loaded, load_model
+    _HAS_CLASSIFY = True
+except ImportError:
+    _HAS_CLASSIFY = False
+
 
 # ============================================================================
 #                          主窗口
@@ -53,6 +60,8 @@ class MainWindow(QMainWindow):
         self.active_file = None
         self.selected_piece = None
         self.station_coords = load_station_coords()
+        self._classify_cache = {}  # (filepath, idx) -> (class_name, confidence)
+        self._classify_ok = _HAS_CLASSIFY  # 模型加载成功后置 True，失败置 False，避免反复重试
 
         # 构建界面
         self._build_menubar()
@@ -108,6 +117,7 @@ class MainWindow(QMainWindow):
         data_menu = menubar.addMenu("数据处理(&D)")
         data_menu.addAction("按距离分类...", self.open_distance_classify)
         data_menu.addAction("按昼夜分类...", self.open_daynight_classify)
+        data_menu.addAction("波形分类...", self.open_waveform_classify)
         data_menu.addSeparator()
         data_menu.addAction("多站闪电追踪...", self.open_trace_match)
         data_menu.addAction("波形聚类分析...", self.open_cluster_analysis)
@@ -146,9 +156,10 @@ class MainWindow(QMainWindow):
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["勾选", "发生时间", "昼夜", "状态"])
         self.tree.setColumnWidth(0, 55)
-        self.tree.setColumnWidth(1, 220)
-        self.tree.setColumnWidth(2, 60)
+        self.tree.setColumnWidth(1, 200)
+        self.tree.setColumnWidth(2, 160)  # 加宽以显示 "白天 | NCG (87%)"
         self.tree.setColumnWidth(3, 70)
+        self.tree.setToolTipDuration(10000)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tree.setAlternatingRowColors(True)
@@ -406,6 +417,11 @@ class MainWindow(QMainWindow):
             del self.deleted_sets[filepath]
         if filepath in self.checked_sets:
             del self.checked_sets[filepath]
+        # 清理分类缓存
+        self._classify_cache = {
+            k: v for k, v in self._classify_cache.items()
+            if k[0] != filepath
+        }
 
         # 删除树节点
         root = self.tree.invisibleRootItem()
@@ -448,9 +464,82 @@ class MainWindow(QMainWindow):
             self.active_file = filepath
             self.update_status()
             QApplication.restoreOverrideCursor()
+
+            # 同步预分类所有片段 (ONNX 批量推理，消除点击卡顿)
+            if _HAS_CLASSIFY:
+                self._classify_file_sync(filepath, pieces)
         except Exception as e:
             QApplication.restoreOverrideCursor()
             QMessageBox.critical(self, "加载失败", f"无法解析lig文件:\n{filepath}\n{e}")
+
+    def _classify_file_sync(self, filepath, pieces):
+        """同步预分类一个文件的所有片段，填充缓存并更新树节点"""
+        if not self._classify_ok:
+            return
+
+        try:
+            if not is_model_loaded():
+                load_model()
+        except Exception as e:
+            self._classify_ok = False
+            err_msg = f"ONNX模型加载失败: {e}"
+            self.statusBar().showMessage(err_msg, 8000)
+            if getattr(sys, 'frozen', False):
+                QMessageBox.critical(self, "分类错误", err_msg)
+            return
+
+        raw_pieces = []
+        for _, piece_data in pieces:
+            try:
+                raw_pieces.append(np.array(piece_data['0'], dtype=np.float64))
+            except (KeyError, IndexError):
+                raw_pieces.append(np.zeros(8000, dtype=np.float64))
+
+        try:
+            results = classify_batch_raw(raw_pieces)
+        except Exception as e:
+            self._classify_ok = False
+            err_msg = f"批量分类失败: {e}"
+            self.statusBar().showMessage(err_msg, 8000)
+            if getattr(sys, 'frozen', False):
+                QMessageBox.critical(self, "分类错误", err_msg)
+            return
+
+        if not results:
+            self.statusBar().showMessage("分类: 无结果", 3000)
+            return
+
+        # 填充分类缓存
+        for i, (cls_name, conf) in enumerate(results):
+            if i < len(pieces):
+                self._classify_cache[(filepath, i)] = (cls_name, conf)
+
+        # 更新树节点
+        self._update_tree_classify(filepath)
+
+        self.statusBar().showMessage(f"分类完成: {len(results)} 条", 2000)
+
+    def _update_tree_classify(self, filepath):
+        """刷新树节点中该文件的分类信息"""
+        root = self.tree.invisibleRootItem()
+        for ti in range(root.childCount()):
+            file_item = root.child(ti)
+            if file_item.data(0, Qt.UserRole) == filepath:
+                for ci in range(file_item.childCount()):
+                    child = file_item.child(ci)
+                    idx = child.data(0, Qt.UserRole)
+                    if idx is not None:
+                        cached = self._classify_cache.get((filepath, idx))
+                        if cached:
+                            cls_name, conf = cached
+                            daynight = child.text(2)
+                            # 如果已有分类信息则替换，避免重复追加
+                            if "|" in daynight:
+                                daynight = daynight.split("|")[0].strip()
+                            dn_text = f"{daynight} | {cls_name} ({conf*100:.0f}%)"
+                            child.setText(2, dn_text)
+                            child.setToolTip(2, dn_text)
+                break
 
     def _add_file_to_tree(self, filepath):
         fd = self.file_data[filepath]
@@ -589,7 +678,13 @@ class MainWindow(QMainWindow):
 
                     child.setText(0, "✓" if idx in cs else "")
                     child.setText(1, display_time)
-                    child.setText(2, daynight)
+                    # 保留分类信息（如果缓存中有）
+                    dn_text = daynight
+                    cached = self._classify_cache.get((filepath, idx))
+                    if cached:
+                        dn_text = f"{daynight} | {cached[0]} ({cached[1]*100:.0f}%)"
+                    child.setText(2, dn_text)
+                    child.setToolTip(2, dn_text)  # 截断时 hover 显示完整
                     child.setText(3, "已删除" if idx in ds else "")
 
                     if idx in ds:
@@ -650,6 +745,33 @@ class MainWindow(QMainWindow):
         is_deleted = idx in ds
         is_checked = idx in cs
 
+        # 波形分类 (优先从缓存读取；缓存未命中且允许推理时实时 ONNX 推理)
+        classify_info = ""
+        cached = self._classify_cache.get((filepath, idx))
+        if cached:
+            cls_name, conf = cached
+            classify_info = f" | 类型: {cls_name} ({conf*100:.1f}%)"
+        elif self._classify_ok:
+            # 缓存未命中 → 实时推理并缓存 (单条 ONNX 推理 <30ms)
+            try:
+                if not is_model_loaded():
+                    load_model()
+                cls_name, conf = classify_single(raw_piece)
+                self._classify_cache[(filepath, idx)] = (cls_name, conf)
+                classify_info = f" | 类型: {cls_name} ({conf*100:.1f}%)"
+            except Exception as e:
+                # 不再静默吞错 — 显示一次错误后将标志置 False
+                self._classify_ok = False
+                err_msg = f"波形分类失败: {e}"
+                self.statusBar().showMessage(err_msg, 5000)
+                # EXE 中状态栏一闪而过，弹窗保留错误信息便于调试
+                if getattr(sys, 'frozen', False):
+                    from PyQt5.QtWidgets import QMessageBox
+                    QMessageBox.critical(self, "分类错误", err_msg)
+        elif _HAS_CLASSIFY and not hasattr(self, '_classify_warned'):
+            self._classify_warned = True
+            self.statusBar().showMessage("分类模型不可用 (ONNX Runtime未就绪)", 5000)
+
         # 更新信息栏
         period_icon = "☀" if is_daytime else "🌙"
         period_text = "白天" if is_daytime else "夜晚"
@@ -658,6 +780,7 @@ class MainWindow(QMainWindow):
             f"时间: {format_time_display(time_key)} | "
             f"站点: {station_name} | "
             f"{period_icon} {period_text}"
+            f"{classify_info}"
         )
         if is_deleted:
             info_text += " | [已标记删除]"
@@ -1030,6 +1153,15 @@ class MainWindow(QMainWindow):
     def open_lightning_analysis(self):
         from analytics.analyse_dialog import AnalyseDialog
         dlg = AnalyseDialog(self)
+        dlg.exec_()
+
+    def open_waveform_classify(self):
+        from classify_dialog import WaveformClassifyDialog
+        # 尝试使用当前活跃文件所在目录作为默认输入
+        default_dir = ""
+        if self.active_file and self.active_file in self.file_data:
+            default_dir = os.path.dirname(self.active_file)
+        dlg = WaveformClassifyDialog(self, default_dir=default_dir)
         dlg.exec_()
 
     # -------------------- 自动加载命令行文件 --------------------

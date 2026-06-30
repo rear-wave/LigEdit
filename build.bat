@@ -14,6 +14,7 @@ echo Building LigEdit.exe ...
 echo.
 
 pyinstaller --onefile --windowed --name LigEdit --clean ^
+    --runtime-hook runtime_hook_onnx.py ^
     --hidden-import=PyQt5 --hidden-import=PyQt5.QtCore --hidden-import=PyQt5.QtGui --hidden-import=PyQt5.QtWidgets ^
     --hidden-import=PyQt5.sip ^
     --hidden-import=pyqtgraph ^
@@ -30,9 +31,12 @@ pyinstaller --onefile --windowed --name LigEdit --clean ^
     --hidden-import=analytics.trace_dialog --hidden-import=analytics.cluster_core ^
     --hidden-import=analytics.cluster_dialog --hidden-import=analytics.analyse_core ^
     --hidden-import=analytics.analyse_dialog ^
+    --hidden-import=classify_module --hidden-import=classify_dialog ^
+    --collect-binaries onnxruntime ^
     --add-data "LigHead.lig;." --add-data "Limitbyt;." --add-data "站点经纬度.txt;." ^
+    --add-data "checkpoints/resnet.onnx;checkpoints" ^
     --exclude-module=matplotlib --exclude-module=tkinter ^
-    --exclude-module=IPython --exclude-module=PIL ^
+    --exclude-module=torch --exclude-module=IPython --exclude-module=PIL ^
     main_window.py
 
 echo.
